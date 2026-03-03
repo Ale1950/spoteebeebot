@@ -352,10 +352,14 @@ def oauth_cb():
     log.info(f"[OAuth] ✅ Token salvato per telegram_id={tid}")
 
     threading.Thread(target=_async_notify, args=(tid,
-        "✅ *Spotify connesso con successo!*\n\n"
-        "⛏️ Il mining parte automaticamente mentre ascolti musica.\n"
-        "📊 Usa /stats per vedere le tue statistiche.\n\n"
-        "Usa /menu per tutti i controlli 👇"
+        "💎✨〰️〰️〰️〰️〰️〰️〰️✨💎\n"
+        "✅ *SPOTIFY CONNESSO!*\n"
+        "💎✨〰️〰️〰️〰️〰️〰️〰️✨💎\n\n"
+        "🐝 *Acki Nacki* è pronto!\n\n"
+        "⛏️ *Mine Nackles* parte automaticamente\n"
+        "non appena ascolti musica su Spotify 🎵\n\n"
+        "📊 Usa /stats per le tue statistiche\n"
+        "📱 Usa /menu per i controlli"
     ), daemon=True).start()
 
     return """<html><body style="font-family:sans-serif;text-align:center;padding:50px;max-width:500px;margin:auto">
@@ -412,15 +416,18 @@ def _poll_user(user: dict):
         _run_async(_send(tid, "⚠️ Token Spotify scaduto.\nUsa /start per riconnetterti."))
         return
 
-    # Niente in play
     if data.get("_204") or not data.get("is_playing"):
         if user.get("last_track"):
             db_set(tid, last_track="")
-            # Calcola minuti sessione
             if tid in _session_start:
                 mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
                 stats_increment(tid, minutes=mins)
-            _run_async(_send(tid, "⏹️ *Musica ferma* — mining in pausa."))
+            _run_async(_send(tid,
+                "🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘\n"
+                "⏹️ *Musica ferma*\n"
+                "💎 Mine Nackles in pausa\n"
+                "🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘"
+            ))
         return
 
     # Musica in play
@@ -436,19 +443,18 @@ def _poll_user(user: dict):
 
     if label != user.get("last_track", ""):
         db_set(tid, last_track=label)
-
-        # Aggiorna stats
         stats_increment(tid, sessions=1, tracks=1)
         _session_start[tid] = now_ts()
 
-        # Notifica bella con album e progress
         album_line = f"💿 _{album}_\n" if album else ""
         msg = (
+            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n"
             f"🎵 *{track}*\n"
             f"👤 {artist}\n"
             f"{album_line}"
-            f"{bar} {pct}%\n\n"
-            f"⛏️ Mining avviato!"
+            f"{bar} {pct}%\n"
+            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
+            f"⛏️✨ *Mine Nackles AVVIATO!* ✨⛏️"
         )
         _run_async(_send(tid, msg))
 
@@ -479,11 +485,14 @@ def daily_summary_scheduler():
 
                 name = user.get("first_name") or "utente"
                 msg  = (
-                    f"🌙 *Riassunto di oggi, {name}!*\n\n"
-                    f"⛏️ Sessioni mining: *{today['sessions']}*\n"
-                    f"🎵 Brani ascoltati: *{today['tracks_heard']}*\n"
-                    f"⏱️ Minuti minati: *{today['mining_minutes']}*\n\n"
-                    f"Continua così! 🚀"
+                    f"🌙💎〰️〰️〰️〰️〰️〰️〰️💎🌙\n"
+                    f"✨ *ACKI NACKI — REPORT SERALE* ✨\n"
+                    f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
+                    f"👤 *{name}* — oggi hai minato! 🎉\n\n"
+                    f"⛏️  Sessioni Mine Nackles: *{today['sessions']}*\n"
+                    f"🎵  Brani ascoltati: *{today['tracks_heard']}*\n"
+                    f"⏱️  Minuti minati: *{today['mining_minutes']}*\n\n"
+                    f"💎 _Continua così domani!_ 🚀"
                 )
                 _run_async(_send(tid, msg))
                 log.info(f"Daily summary inviato a {tid}")
@@ -491,7 +500,55 @@ def daily_summary_scheduler():
         time.sleep(60)  # controlla ogni minuto
 
 # -------------------------------------------------------
-# TELEGRAM — send helper
+# VISUAL DESIGN — testi e decorazioni
+# -------------------------------------------------------
+ACKI_IMAGE = "acki_music.png"  # immagine locale
+
+# Header principale
+def hdr_main() -> str:
+    return (
+        "💎✨💠〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️💠✨💎\n"
+        "‎\n"
+        "        🐝  *A C K I   N A C K I*  🐝\n"
+        "     🎵  *L I S T E N  &  M I N E*  🎵\n"
+        "‎\n"
+        "💎✨💠〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️💠✨💎"
+    )
+
+def hdr_menu() -> str:
+    return (
+        "🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷\n"
+        "‎\n"
+        "  💎  *ACKI NACKI — MENU*  💎\n"
+        "‎\n"
+        "🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷"
+    )
+
+def hdr_stats() -> str:
+    return (
+        "🟣🟡🟢🔵🟠🟣🟡🟢🔵🟠🟣🟡\n"
+        "‎\n"
+        "  📊  *MINE NACKLES — STATS*  📊\n"
+        "‎\n"
+        "🟣🟡🟢🔵🟠🟣🟡🟢🔵🟠🟣🟡"
+    )
+
+def hdr_playlist() -> str:
+    return (
+        "🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶\n"
+        "‎\n"
+        "  🎼  *LE TUE PLAYLIST*  🎼\n"
+        "‎\n"
+        "🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶"
+    )
+
+def mining_status_line(active: bool) -> str:
+    if active:
+        return "💎 *Mine Nackles:* `ATTIVO` ⛏️✨"
+    return "🔘 *Mine Nackles:* `IN PAUSA`"
+
+# -------------------------------------------------------
+# TELEGRAM — send helpers
 # -------------------------------------------------------
 async def _send(tid: int, text: str, markup=None):
     if not _tg_app:
@@ -505,33 +562,53 @@ async def _send(tid: int, text: str, markup=None):
     except Exception as e:
         log.error(f"Send error a {tid}: {e}")
 
+async def _send_photo(tid: int, caption: str, markup=None):
+    """Manda il messaggio con l'immagine Acki Jewels come header."""
+    if not _tg_app:
+        return
+    try:
+        if os.path.exists(ACKI_IMAGE):
+            with open(ACKI_IMAGE, "rb") as img:
+                await _tg_app.bot.send_photo(
+                    chat_id=tid,
+                    photo=img,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=markup
+                )
+        else:
+            await _send(tid, caption, markup)
+    except Exception as e:
+        log.error(f"Send photo error a {tid}: {e}")
+        await _send(tid, caption, markup)
+
 # -------------------------------------------------------
-# KEYBOARDS
+# KEYBOARDS — con gemme e brillanti
 # -------------------------------------------------------
 def main_kb(user: dict | None) -> InlineKeyboardMarkup:
     authed = bool(user and user.get("access_token"))
     mining = bool(user and user.get("mining_active"))
     rows   = []
     if not authed:
-        rows.append([InlineKeyboardButton("🎵 Connetti Spotify", callback_data="connect")])
+        rows.append([InlineKeyboardButton("🎵✨ Connetti Spotify ✨🎵", callback_data="connect")])
     else:
         rows.append([
-            InlineKeyboardButton("🔄 Stato",      callback_data="status"),
-            InlineKeyboardButton("📊 Statistiche", callback_data="stats"),
+            InlineKeyboardButton("🔷 Stato",        callback_data="status"),
+            InlineKeyboardButton("📊 Stats",         callback_data="stats"),
         ])
         rows.append([
-            InlineKeyboardButton("📋 Playlist",   callback_data="playlists"),
+            InlineKeyboardButton("🎼 Le mie Playlist", callback_data="playlists"),
         ])
         rows.append([InlineKeyboardButton(
-            "⏸️ Sospendi mining" if mining else "▶️ Riprendi mining",
+            "⏸️ 💎 Sospendi Mine Nackles" if mining else "💎⛏️ Avvia Mine Nackles",
             callback_data="mining_off" if mining else "mining_on"
         )])
         rows.append([
-            InlineKeyboardButton("▶️ Play",  callback_data="play"),
-            InlineKeyboardButton("⏸️ Pause", callback_data="pause"),
-            InlineKeyboardButton("⏭️ Next",  callback_data="next"),
+            InlineKeyboardButton("▶️",  callback_data="play"),
+            InlineKeyboardButton("⏸️", callback_data="pause"),
+            InlineKeyboardButton("⏭️", callback_data="next"),
         ])
-        rows.append([InlineKeyboardButton("🔌 Disconnetti", callback_data="disconnect")])
+        rows.append([InlineKeyboardButton("🔌 Disconnetti Spotify", callback_data="disconnect")])
     return InlineKeyboardMarkup(rows)
 
 # -------------------------------------------------------
@@ -547,36 +624,67 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     authed = bool(user and user.get("access_token"))
 
     if authed:
-        total = stats_get_total(tid)
+        total  = stats_get_total(tid)
+        mining = bool(user and user.get("mining_active"))
+
+        def fmt(m): return f"{m//60}h {m%60}min" if m >= 60 else f"{m} min"
+
         txt = (
-            f"👋 Bentornato *{name}*!\n\n"
-            f"📊 *Le tue statistiche totali:*\n"
-            f"⛏️ Sessioni: {total['sessions']}\n"
-            f"🎵 Brani: {total['tracks_heard']}\n"
-            f"⏱️ Minuti minati: {total['mining_minutes']}\n\n"
-            f"Il bot sta monitorando Spotify in automatico 🚀"
+            f"{hdr_main()}\n\n"
+            f"👋 Bentornato *{name}*! 💎\n\n"
+            f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+            f"📈 *I tuoi Mine Nackles:*\n"
+            f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+            f"⛏️  Sessioni:    *{total['sessions']}*\n"
+            f"🎵  Brani:       *{total['tracks_heard']}*\n"
+            f"⏱️  Tempo totale: *{fmt(total['mining_minutes'])}*\n"
+            f"📆  Giorni attivi: *{total['days_active']}*\n\n"
+            f"{mining_status_line(mining)}\n\n"
+            f"_Ascolta musica → mina automaticamente_ 🚀"
         )
     else:
         txt = (
-            f"👋 Ciao *{name}*! Benvenuto su *SpoteeBeeBot* 🐝\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🎵 *Listen & Mine — Acki Nacki*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Ascolta musica su Spotify e mina token NACKL automaticamente.\n\n"
-            "✅ *Come funziona:*\n"
-            "1️⃣ Connetti il tuo account Spotify\n"
-            "2️⃣ Ascolta musica normalmente\n"
-            "3️⃣ Il bot mina in automatico per te\n"
-            "4️⃣ Guarda le tue statistiche con /stats\n\n"
-            "Premi il bottone qui sotto per iniziare 👇"
+            f"{hdr_main()}\n\n"
+            f"👋 Ciao *{name}*! Benvenuto! 🐝\n\n"
+            f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+            f"💎 *Come funziona:*\n"
+            f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+            f"1️⃣  Connetti il tuo Spotify\n"
+            f"2️⃣  Ascolta musica normalmente\n"
+            f"3️⃣  Mine Nackles parte in automatico ⛏️\n"
+            f"4️⃣  Guarda le tue stats con /stats\n\n"
+            f"✨ _Premi il bottone qui sotto_ ✨"
         )
-    await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
+
+    if os.path.exists(ACKI_IMAGE):
+        with open(ACKI_IMAGE, "rb") as img:
+            await update.message.reply_photo(
+                photo=img,
+                caption=txt,
+                parse_mode="Markdown",
+                reply_markup=main_kb(user)
+            )
+    else:
+        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
 
 async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = db_get(update.effective_user.id)
-    await update.message.reply_text(
-        "📱 *Menu SpoteeBeeBot*", parse_mode="Markdown", reply_markup=main_kb(user)
+    mining = bool(user and user.get("mining_active"))
+    txt = (
+        f"{hdr_menu()}\n\n"
+        f"{mining_status_line(mining)}\n\n"
+        f"_Scegli un'opzione_ 👇"
     )
+    if os.path.exists(ACKI_IMAGE):
+        with open(ACKI_IMAGE, "rb") as img:
+            await update.message.reply_photo(
+                photo=img,
+                caption=txt,
+                parse_mode="Markdown",
+                reply_markup=main_kb(user)
+            )
+    else:
+        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
 
 async def h_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid  = update.effective_user.id
@@ -592,24 +700,29 @@ async def _send_stats(tid: int, message, edit=False):
     user  = db_get(tid)
     name  = (user or {}).get("first_name") or "utente"
 
-    # Calcola ore e minuti
-    def fmt_time(mins):
-        if mins < 60:
-            return f"{mins} min"
-        return f"{mins // 60}h {mins % 60}min"
+    def fmt(m): return f"{m//60}h {m%60}min" if m >= 60 else f"{m} min"
+
+    # Barra progresso brani oggi
+    t = min(today['tracks_heard'], 20)
+    bar = "💎" * t + "🔘" * (20 - t)
 
     txt = (
-        f"📊 *Statistiche di {name}*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📅 *Oggi ({today_str()}):*\n"
-        f"⛏️ Sessioni mining: *{today['sessions']}*\n"
-        f"🎵 Brani ascoltati: *{today['tracks_heard']}*\n"
-        f"⏱️ Tempo minato: *{fmt_time(today['mining_minutes'])}*\n\n"
-        f"🏆 *Totale storico:*\n"
-        f"⛏️ Sessioni totali: *{total['sessions']}*\n"
-        f"🎵 Brani totali: *{total['tracks_heard']}*\n"
-        f"⏱️ Tempo totale: *{fmt_time(total['mining_minutes'])}*\n"
-        f"📆 Giorni attivi: *{total['days_active']}*\n"
+        f"{hdr_stats()}\n\n"
+        f"👤 *{name}*\n\n"
+        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+        f"📅 *OGGI — {today_str()}*\n"
+        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+        f"⛏️  Sessioni Mine:  *{today['sessions']}*\n"
+        f"🎵  Brani ascoltati: *{today['tracks_heard']}*\n"
+        f"⏱️  Tempo minato:   *{fmt(today['mining_minutes'])}*\n\n"
+        f"{bar}\n\n"
+        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+        f"🏆 *TOTALE STORICO*\n"
+        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+        f"💎  Sessioni totali: *{total['sessions']}*\n"
+        f"🎶  Brani totali:    *{total['tracks_heard']}*\n"
+        f"⏱️  Tempo totale:   *{fmt(total['mining_minutes'])}*\n"
+        f"📆  Giorni attivi:  *{total['days_active']}*\n"
     )
 
     kb = InlineKeyboardMarkup([[
@@ -623,8 +736,62 @@ async def _send_stats(tid: int, message, edit=False):
         await message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
 
 # -------------------------------------------------------
-# CALLBACK BOTTONI
+# Helper: azioni player con controllo device
 # -------------------------------------------------------
+async def _player_action(q, user: dict, action: str):
+    """Esegue un'azione player. Se nessun device attivo, manda link per aprire Spotify."""
+    # Controlla device disponibili
+    devices_data = sp_get(user, "/me/player/devices")
+    devices = (devices_data or {}).get("devices", [])
+    active  = [d for d in devices if d.get("is_active")]
+
+    if not devices:
+        # Nessun device trovato — Spotify non è aperto da nessuna parte
+        await q.edit_message_text(
+            "📱 *Spotify non è aperto su nessun dispositivo.*\n\n"
+            "Apri Spotify sul tuo telefono o PC, poi torna qui e riprova.\n\n"
+            "👉 [Apri Spotify](https://open.spotify.com)",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Riprova", callback_data=f"{action}_retry"),
+                InlineKeyboardButton("🔙 Menu",    callback_data="back"),
+            ]])
+        )
+        return
+
+    # Usa il device attivo o il primo disponibile
+    device_id = (active[0] if active else devices[0])["id"]
+
+    if action == "play":
+        res = sp_put(user, "/me/player/play", params={"device_id": device_id})
+    elif action == "pause":
+        res = sp_put(user, "/me/player/pause", params={"device_id": device_id})
+    elif action == "next":
+        res = sp_post(user, "/me/player/next")
+        res = res or {}
+    else:
+        return
+
+    status = (res or {}).get("_status", 0)
+
+    if status in (200, 202, 204):
+        icons = {"play": "▶️ Musica avviata!", "pause": "⏸️ Musica in pausa.", "next": "⏭️ Brano successivo!"}
+        await q.answer(icons.get(action, "✅"), show_alert=False)
+    elif status == 403:
+        await q.answer("⚠️ Serve Spotify Premium per questo comando.", show_alert=True)
+    elif status == 404:
+        await q.edit_message_text(
+            "📱 *Nessun dispositivo attivo trovato.*\n\n"
+            "Apri Spotify e avvia un brano, poi riprova.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Menu", callback_data="back")
+            ]])
+        )
+    else:
+        await q.answer(f"⚠️ Errore ({status}). Riprova.", show_alert=True)
+
+
 async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q    = update.callback_query
     await q.answer()
@@ -643,14 +810,19 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         }
         url = SPOTIFY_AUTH_URL + "?" + urllib.parse.urlencode(params)
         await q.edit_message_text(
-            "🔐 *Connetti Spotify in 3 passi:*\n\n"
-            "1️⃣ Premi il link qui sotto\n"
-            "2️⃣ Accedi con il tuo account Spotify\n"
-            "3️⃣ Clicca *Accetta* → torna qui ✅\n\n"
-            f"👉 [Apri Spotify e autorizza]({url})",
+            "💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n"
+            "🔐 *CONNETTI SPOTIFY*\n"
+            "💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
+            "✅ *3 passi semplici:*\n\n"
+            "1️⃣  Premi il link qui sotto\n"
+            "2️⃣  Accedi con Spotify\n"
+            "3️⃣  Premi *Accetta* → torna qui\n\n"
+            f"👉 [✨ Autorizza Spotify ✨]({url})\n\n"
+            f"_Dopo l'autorizzazione Mine Nackles\n"
+            f"partirà automaticamente_ 🎵⛏️",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Ho autorizzato, controlla", callback_data="check_auth")
+                InlineKeyboardButton("💎 Ho autorizzato, controlla!", callback_data="check_auth")
             ]])
         )
 
@@ -692,14 +864,11 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown", reply_markup=main_kb(db_get(tid)))
 
     elif data == "play":
-        res = sp_put(user, "/me/player/play")
-        await q.answer(f"▶️ Play ({res['_status'] if res else 'err'})")
+        await _player_action(q, user, "play")
     elif data == "pause":
-        res = sp_put(user, "/me/player/pause")
-        await q.answer(f"⏸️ Pause ({res['_status'] if res else 'err'})")
+        await _player_action(q, user, "pause")
     elif data == "next":
-        res = sp_post(user, "/me/player/next")
-        await q.answer(f"⏭️ Next ({res['_status'] if res else 'err'})")
+        await _player_action(q, user, "next")
 
     elif data == "playlists":
         await _edit_playlists(q, user, page=0)
@@ -721,22 +890,78 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit_playlist_tracks(q, user, pl_id, page=page)
 
     elif data.startswith("playpl:"):
-        # Avvia la playlist
         uri = data.split(":", 1)[1]
-        res = sp_put(user, "/me/player/play", body={"context_uri": uri})
+        parts = uri.split(":")
+        spotify_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
+
+        devices_data = sp_get(user, "/me/player/devices")
+        devices = (devices_data or {}).get("devices", [])
+        active  = [d for d in devices if d.get("is_active")]
+
+        if not devices:
+            await q.edit_message_text(
+                "📱 *Spotify non è aperto.*\n\n"
+                "Apri Spotify prima di avviare una playlist.\n\n"
+                f"👉 [Apri Spotify]({spotify_url})",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
+                ]])
+            )
+            return
+
+        device_id = (active[0] if active else devices[0])["id"]
+        res = sp_put(user, "/me/player/play",
+                     params={"device_id": device_id},
+                     body={"context_uri": uri})
         if res and res["_status"] in (200, 202, 204):
             await q.answer("▶️ Playlist avviata!")
         else:
-            await q.answer("⚠️ Serve Spotify Premium e un device attivo.", show_alert=True)
+            await q.edit_message_text(
+                f"⚠️ Non riesco ad avviare la playlist.\n\n"
+                f"Prova ad aprirla direttamente: [Apri in Spotify]({spotify_url})",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
+                ]])
+            )
 
     elif data.startswith("playtrack:"):
-        # Avvia brano specifico
         uri = data.split(":", 1)[1]
-        res = sp_put(user, "/me/player/play", body={"uris": [uri]})
+        parts = uri.split(":")
+        spotify_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
+
+        devices_data = sp_get(user, "/me/player/devices")
+        devices = (devices_data or {}).get("devices", [])
+        active  = [d for d in devices if d.get("is_active")]
+
+        if not devices:
+            await q.edit_message_text(
+                "📱 *Spotify non è aperto.*\n\n"
+                f"Apri Spotify prima di avviare un brano.\n\n"
+                f"👉 [Apri in Spotify]({spotify_url})",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
+                ]])
+            )
+            return
+
+        device_id = (active[0] if active else devices[0])["id"]
+        res = sp_put(user, "/me/player/play",
+                     params={"device_id": device_id},
+                     body={"uris": [uri]})
         if res and res["_status"] in (200, 202, 204):
             await q.answer("▶️ Brano avviato!")
         else:
-            await q.answer("⚠️ Serve Spotify Premium e un device attivo.", show_alert=True)
+            await q.edit_message_text(
+                f"⚠️ Non riesco ad avviare il brano.\n\n"
+                f"Prova ad aprirlo direttamente: [Apri in Spotify]({spotify_url})",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
+                ]])
+            )
 
     elif data == "disconnect":
         db_set(tid, access_token=None, refresh_token=None,
@@ -770,8 +995,13 @@ async def _edit_status(q, user):
     if data is None:
         txt = "⚠️ Token scaduto. Usa /start."
     elif data.get("_204") or not data.get("is_playing"):
-        m   = "⛏️ Mining attivo" if user.get("mining_active") else "⏸️ Mining sospeso"
-        txt = f"⏹️ *Niente in riproduzione*\n\n{m}"
+        m   = "⛏️✨ Mine Nackles pronto — aspetta musica 🎵" if user.get("mining_active") else "🔘 Mine Nackles in pausa"
+        txt = (
+            f"🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘\n"
+            f"⏹️ *Niente in riproduzione*\n"
+            f"🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘\n\n"
+            f"{m}"
+        )
     else:
         item    = data.get("item") or {}
         track   = item.get("name", "?")
@@ -780,13 +1010,15 @@ async def _edit_status(q, user):
         prog    = data.get("progress_ms", 0)
         dur     = max(item.get("duration_ms", 1), 1)
         pct     = int(prog / dur * 100)
-        bar     = "▓" * (pct // 10) + "░" * (10 - pct // 10)
-        m       = "⛏️ Mining attivo" if user.get("mining_active") else "⏸️ Mining sospeso"
+        bar     = "💎" * (pct // 10) + "🔘" * (10 - pct // 10)
+        m       = "⛏️✨ Mine Nackles ATTIVO" if user.get("mining_active") else "🔘 Mine Nackles in pausa"
         txt     = (
+            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n"
             f"▶️ *{track}*\n"
             f"👤 {artist}\n"
             f"💿 _{album}_\n\n"
-            f"{bar} {pct}%\n\n"
+            f"{bar} {pct}%\n"
+            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
             f"{m}"
         )
 
@@ -841,7 +1073,9 @@ async def _edit_playlists(q, user, page=0):
     rows += back
 
     await q.edit_message_text(
-        f"📋 *Le tue playlist* (pag. {page+1}/{pages})\nPremi una playlist per vedere i brani:",
+        f"{hdr_playlist()}\n\n"
+        f"_Pag. {page+1}/{pages} — {total} playlist_\n\n"
+        f"Premi una playlist per vedere i brani:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows)
     )
