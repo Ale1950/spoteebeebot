@@ -318,6 +318,7 @@ def sp_post(user: dict, path: str) -> dict | None:
 _oauth_app     = Flask("oauth")
 _pending: dict = {}
 _tg_app        = None
+_main_loop     = None  # event loop del bot, usato per notifiche cross-thread
 
 @_oauth_app.get("/")
 def oauth_home():
@@ -392,21 +393,18 @@ def oauth_cb():
 
 def _async_notify(tid: int, text: str):
     time.sleep(1)
-    if _tg_app:
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(_send(tid, text))
-            loop.close()
-        except Exception as e:
-            log.error(f"Notify error: {e}")
+    _run_async(_send(tid, text))
 
 def _run_async(coro):
+    global _main_loop
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(coro)
-        loop.close()
+        if _main_loop and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, _main_loop)
+        else:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(coro)
+            loop.close()
     except Exception as e:
         log.error(f"Async error: {e}")
 
@@ -1221,6 +1219,8 @@ def main():
 
     # Bot Telegram
     _tg_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    # Store event loop reference for cross-thread use
+    _tg_app._main_loop = None
     _tg_app.add_handler(CommandHandler("start", h_start))
     _tg_app.add_handler(CommandHandler("menu",  h_menu))
     _tg_app.add_handler(CommandHandler("stats", h_stats))
@@ -1232,6 +1232,11 @@ def main():
     print(f"  Daily summary ogni giorno alle {DAILY_SUMMARY_HOUR}:00")
     print("="*50 + "\n")
 
+    async def _set_loop():
+        global _main_loop
+        _main_loop = asyncio.get_event_loop()
+    
+    _tg_app.post_init = _set_loop
     _tg_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
