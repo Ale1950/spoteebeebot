@@ -1220,7 +1220,6 @@ def main():
     # Bot Telegram
     _tg_app = Application.builder().token(TELEGRAM_TOKEN).build()
     # Store event loop reference for cross-thread use
-    _tg_app._main_loop = None
     _tg_app.add_handler(CommandHandler("start", h_start))
     _tg_app.add_handler(CommandHandler("menu",  h_menu))
     _tg_app.add_handler(CommandHandler("stats", h_stats))
