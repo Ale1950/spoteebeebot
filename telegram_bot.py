@@ -110,11 +110,17 @@ log.info(f"REDIRECT_URI = {REDIRECT_URI}")
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL= "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
+# Scope base — non richiedono Premium, funzionano con account Free
 SCOPE = (
-    "user-read-playback-state user-read-currently-playing "
-    "playlist-read-private playlist-read-collaborative "
+    "user-read-playback-state "
+    "user-read-currently-playing "
+    "playlist-read-private "
+    "playlist-read-collaborative "
     "user-modify-playback-state"
 )
+# Nota: user-modify-playback-state richiede Premium su Spotify
+# ma NON blocca il login — Spotify lo accetta anche su Free
+# (i comandi play/pause daranno 403 su Free, ma il login funziona)
 
 # -------------------------------------------------------
 # DATABASE — utenti + statistiche
@@ -374,22 +380,106 @@ def oauth_cb():
 
     log.info(f"[OAuth] ✅ Token salvato per telegram_id={tid}")
 
-    threading.Thread(target=_async_notify, args=(tid,
-        f"`{SEP}`\n"
-        "✅ *SPOTIFY CONNESSO!*\n"
-        f"`{SEP}`\n\n"
-        "`▸ ACKI NACKI è pronto!`\n"
-        "⛏️ Mine Nackles parte automaticamente\n"
-        "non appena ascolti musica 🎵\n\n"
-        "• /stats — le tue statistiche\n"
-        "• /menu — tutti i controlli"
-    ), daemon=True).start()
+    # Verifica subito se l'account è Premium
+    user_data   = db_get(tid)
+    profile     = None
+    premium_ok  = False
+    if user_data:
+        profile    = sp_get(user_data, "/me")
+        product    = (profile or {}).get("product", "")
+        premium_ok = product == "premium"
+        sp_name    = (profile or {}).get("display_name", "")
+        log.info(f"[OAuth] Account: {sp_name} / product={product}")
 
-    return """<html><body style="font-family:sans-serif;text-align:center;padding:50px;max-width:500px;margin:auto">
-    <h2>✅ Spotify connesso!</h2>
-    <p style="font-size:18px">Torna su Telegram — il bot è già attivo.</p>
-    <p><b>Puoi chiudere questa finestra.</b></p>
-    </body></html>"""
+    if premium_ok:
+        confirm_msg = (
+            f"`{SEP}`\n"
+            f"✅ *SPOTIFY PREMIUM CONNESSO!*\n"
+            f"`{SEP}`\n\n"
+            f"👤 Account: *{sp_name}*\n"
+            f"⭐ Piano: *Premium* ✅\n\n"
+            "`▸ ACKI NACKI è pronto!`\n"
+            "⛏️ Mine Nackles parte automaticamente\n"
+            "non appena ascolti musica 🎵\n\n"
+            "• /stats — le tue statistiche\n"
+            "• /menu — tutti i controlli"
+        )
+    else:
+        product_label = (profile or {}).get("product", "sconosciuto")
+        confirm_msg = (
+            f"`{SEP}`\n"
+            f"⚠️ *ATTENZIONE — ACCOUNT NON PREMIUM*\n"
+            f"`{SEP}`\n\n"
+            f"Piano rilevato: *{product_label}*\n\n"
+            "I comandi play/pause/next richiedono\n"
+            "*Spotify Premium*. Hai connesso l'account\n"
+            "sbagliato?\n\n"
+            "🔴 Premi *Disconnetti* nel menu,\n"
+            "poi riconnetti con l'account Premium."
+        )
+
+    threading.Thread(target=_async_notify, args=(tid, confirm_msg), daemon=True).start()
+
+    return """<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Acki Nacki — Connesso!</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      background: #0e0b08;
+      color: #e8a87c;
+      font-family: -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card {
+      background: #1a0d08;
+      border: 1px solid #c0392b55;
+      border-radius: 20px;
+      padding: 40px 30px;
+      max-width: 400px;
+      width: 90%;
+      text-align: center;
+    }
+    .icon { font-size: 60px; margin-bottom: 20px; }
+    h2 { font-size: 22px; color: #e8a87c; margin-bottom: 10px; letter-spacing: 1px; }
+    .sep { color: #c0392b; font-size: 20px; margin: 15px 0; letter-spacing: 4px; }
+    p { font-size: 15px; color: #7a5a3a; line-height: 1.6; margin-bottom: 20px; }
+    .btn {
+      display: inline-block;
+      background: linear-gradient(135deg, #c0392b, #922b21);
+      color: white;
+      text-decoration: none;
+      padding: 14px 30px;
+      border-radius: 50px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      margin: 8px;
+    }
+    .btn-tg { background: linear-gradient(135deg, #2481cc, #1a6aaa); }
+    .sig { font-size: 11px; color: #3a1a0a; margin-top: 25px; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h2>SPOTIFY CONNESSO!</h2>
+    <div class="sep">▬▬▬▬▬▬▬▬</div>
+    <p>⛏️ Mine Nackles è pronto.<br>Torna su Telegram per iniziare.</p>
+    <a href="tg://resolve?domain=SpoteeBeeBot" class="btn btn-tg">📱 Apri Telegram</a>
+    <p class="sig">— Acki Jewels 💎</p>
+  </div>
+  <script>
+    // Auto-redirect a Telegram dopo 2 secondi
+    setTimeout(function() {
+      window.location.href = "tg://resolve?domain=SpoteeBeeBot";
+    }, 2000);
+  </script>
+</body>
+</html>"""
 
 def _async_notify(tid: int, text: str):
     time.sleep(1)
@@ -941,20 +1031,28 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         params = {
             "response_type": "code", "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI, "scope": SCOPE,
-            "state": state, "show_dialog": "true",
+            "state": state,
+            # show_dialog: NON forzare re-login — usa sessione già attiva
+            # così chi ha Premium nel browser viene riconosciuto direttamente
         }
         url = SPOTIFY_AUTH_URL + "?" + urllib.parse.urlencode(params)
         txt = (
-            "💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n"
-            "🔐 *CONNETTI SPOTIFY*\n"
-            "💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
-            "✅ *3 passi semplici:*\n\n"
+            f"`{SEP}`\n"
+            "🔐 *CONNETTI SPOTIFY PREMIUM*\n"
+            f"`{SEP}`\n\n"
+            "`▸ IMPORTANTE — leggi prima`\n"
+            "🔴 Apri *l'app Spotify* sul telefono\n"
+            "🔴 Assicurati di essere loggato con\n"
+            "   il tuo account *Premium*\n\n"
+            "`▸ POI SEGUI QUESTI PASSI`\n"
             "1️⃣  Premi il link qui sotto\n"
-            "2️⃣  Accedi con Spotify\n"
-            "3️⃣  Premi *Accetta* → torna qui\n\n"
-            f"👉 [✨ Autorizza Spotify ✨]({url})\n\n"
-            f"_Dopo l'autorizzazione Mine Nackles\n"
-            f"partirà automaticamente_ 🎵⛏️"
+            "2️⃣  Se Spotify chiede il login →\n"
+            "   usa l'email del tuo *Premium*\n"
+            "3️⃣  Premi *Accetta*\n"
+            "4️⃣  Torna qui e premi il bottone\n\n"
+            f"👉 [🎧 Autorizza Spotify Premium]({url})\n\n"
+            "⚠️ _Se vedi pagina upgrade: premi Indietro,_\n"
+            "_apri Spotify, fai logout e riloggati con Premium_"
             f"{firma()}"
         )
         kb = InlineKeyboardMarkup([[
