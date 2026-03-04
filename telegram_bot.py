@@ -589,7 +589,17 @@ async def _send(tid: int, text: str, markup=None):
     except Exception as e:
         log.error(f"Send error a {tid}: {e}")
 
-async def _send_photo(tid: int, caption: str, markup=None):
+async def _edit(q, txt: str, markup=None):
+    """Modifica il messaggio sia se è foto (caption) che testo normale."""
+    try:
+        await _edit(q, txt, markup)
+    except Exception:
+        try:
+            await _edit(q, reply_markup=markup)
+        except Exception as e:
+            log.error(f"Edit error: {e}")
+
+
     """Manda il messaggio con l'immagine Acki Jewels come header."""
     if not _tg_app:
         return
@@ -694,7 +704,7 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_kb(user)
             )
     else:
-        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
+        await update.message.reply_text(txt, main_kb(user))
 
 async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = db_get(update.effective_user.id)
@@ -713,7 +723,7 @@ async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_kb(user)
             )
     else:
-        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
+        await update.message.reply_text(txt, main_kb(user))
 
 async def h_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid  = update.effective_user.id
@@ -761,9 +771,9 @@ async def _send_stats(tid: int, message, edit=False):
     ]])
 
     if edit:
-        await message.edit_text(txt, parse_mode="Markdown", reply_markup=kb)
+        await message.edit_text(txt, kb)
     else:
-        await message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
+        await message.reply_text(txt, kb)
 
 # -------------------------------------------------------
 # Helper: azioni player con controllo device
@@ -777,7 +787,7 @@ async def _player_action(q, user: dict, action: str):
 
     if not devices:
         # Nessun device trovato — Spotify non è aperto da nessuna parte
-        await q.edit_message_text(
+        await _edit(q, 
             "📱 *Spotify non è aperto su nessun dispositivo.*\n\n"
             "Apri Spotify sul tuo telefono o PC, poi torna qui e riprova.\n\n"
             "👉 [Apri Spotify](https://open.spotify.com)",
@@ -810,7 +820,7 @@ async def _player_action(q, user: dict, action: str):
     elif status == 403:
         await q.answer("⚠️ Serve Spotify Premium per questo comando.", show_alert=True)
     elif status == 404:
-        await q.edit_message_text(
+        await _edit(q, 
             "📱 *Nessun dispositivo attivo trovato.*\n\n"
             "Apri Spotify e avvia un brano, poi riprova.",
             parse_mode="Markdown",
@@ -839,7 +849,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "state": state, "show_dialog": "true",
         }
         url = SPOTIFY_AUTH_URL + "?" + urllib.parse.urlencode(params)
-        await q.edit_message_text(
+        txt = (
             "💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n"
             "🔐 *CONNETTI SPOTIFY*\n"
             "💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
@@ -849,22 +859,26 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "3️⃣  Premi *Accetta* → torna qui\n\n"
             f"👉 [✨ Autorizza Spotify ✨]({url})\n\n"
             f"_Dopo l'autorizzazione Mine Nackles\n"
-            f"partirà automaticamente_ 🎵⛏️",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("💎 Ho autorizzato, controlla!", callback_data="check_auth")
-            ]])
+            f"partirà automaticamente_ 🎵⛏️"
+            f"{firma()}"
         )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💎 Ho autorizzato, controlla!", callback_data="check_auth")
+        ]])
+        try:
+            await _edit(q, txt, kb)
+        except Exception:
+            await _edit(q, reply_markup=kb)
 
     elif data == "check_auth":
         user = db_get(tid)
         if user and user.get("access_token"):
-            await q.edit_message_text(
+            await _edit(q, 
                 "✅ *Connesso!*\nMining automatico attivo 🚀\n\nUsa /stats per le statistiche.",
                 parse_mode="Markdown", reply_markup=main_kb(user)
             )
         else:
-            await q.edit_message_text(
+            await _edit(q, 
                 "⏳ Non ho ancora ricevuto l'autorizzazione.\n"
                 "Assicurati di aver premuto *Accetta* su Spotify.",
                 parse_mode="Markdown",
@@ -882,7 +896,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "mining_on":
         db_set(tid, mining_active=1)
-        await q.edit_message_text("▶️ *Mining riattivato!*\nIl bot monitora Spotify in automatico.",
+        await _edit(q, "▶️ *Mining riattivato!*\nIl bot monitora Spotify in automatico.",
             parse_mode="Markdown", reply_markup=main_kb(db_get(tid)))
 
     elif data == "mining_off":
@@ -890,7 +904,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if tid in _session_start:
             mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
             stats_increment(tid, minutes=mins)
-        await q.edit_message_text("⏸️ *Mining sospeso.*\nPuoi riattivarlo quando vuoi.",
+        await _edit(q, "⏸️ *Mining sospeso.*\nPuoi riattivarlo quando vuoi.",
             parse_mode="Markdown", reply_markup=main_kb(db_get(tid)))
 
     elif data == "play":
@@ -929,7 +943,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         active  = [d for d in devices if d.get("is_active")]
 
         if not devices:
-            await q.edit_message_text(
+            await _edit(q, 
                 "📱 *Spotify non è aperto.*\n\n"
                 "Apri Spotify prima di avviare una playlist.\n\n"
                 f"👉 [Apri Spotify]({spotify_url})",
@@ -947,7 +961,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if res and res["_status"] in (200, 202, 204):
             await q.answer("▶️ Playlist avviata!")
         else:
-            await q.edit_message_text(
+            await _edit(q, 
                 f"⚠️ Non riesco ad avviare la playlist.\n\n"
                 f"Prova ad aprirla direttamente: [Apri in Spotify]({spotify_url})",
                 parse_mode="Markdown",
@@ -966,7 +980,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         active  = [d for d in devices if d.get("is_active")]
 
         if not devices:
-            await q.edit_message_text(
+            await _edit(q, 
                 "📱 *Spotify non è aperto.*\n\n"
                 f"Apri Spotify prima di avviare un brano.\n\n"
                 f"👉 [Apri in Spotify]({spotify_url})",
@@ -984,7 +998,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if res and res["_status"] in (200, 202, 204):
             await q.answer("▶️ Brano avviato!")
         else:
-            await q.edit_message_text(
+            await _edit(q, 
                 f"⚠️ Non riesco ad avviare il brano.\n\n"
                 f"Prova ad aprirlo direttamente: [Apri in Spotify]({spotify_url})",
                 parse_mode="Markdown",
@@ -996,13 +1010,13 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "disconnect":
         db_set(tid, access_token=None, refresh_token=None,
                mining_active=0, last_track="")
-        await q.edit_message_text(
+        await _edit(q, 
             "🔌 *Disconnesso da Spotify.*\nUsa /start per riconnetterti.",
             parse_mode="Markdown"
         )
 
     elif data == "back":
-        await q.edit_message_text("📱 *Menu SpoteeBeeBot*", parse_mode="Markdown",
+        await _edit(q,
             reply_markup=main_kb(db_get(tid)))
 
     elif data == "noop":
@@ -1016,7 +1030,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # -------------------------------------------------------
 async def _edit_status(q, user):
     if not user or not user.get("access_token"):
-        await q.edit_message_text("❌ Non connesso. Usa /start.")
+        await _edit(q, "❌ Non connesso. Usa /start.")
         return
 
     data = sp_get(user, "/me/player/currently-playing",
@@ -1054,7 +1068,7 @@ async def _edit_status(q, user):
             f"{firma()}"
         )
 
-    await q.edit_message_text(txt, parse_mode="Markdown",
+    await _edit(q,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Aggiorna", callback_data="status"),
             InlineKeyboardButton("📊 Stats",    callback_data="stats"),
@@ -1066,7 +1080,7 @@ async def _edit_status(q, user):
 # -------------------------------------------------------
 async def _edit_playlists(q, user, page=0):
     if not user:
-        await q.edit_message_text("❌ Non connesso.")
+        await _edit(q, "❌ Non connesso.")
         return
 
     limit  = 8
@@ -1079,7 +1093,7 @@ async def _edit_playlists(q, user, page=0):
     back = [[InlineKeyboardButton("🔙 Menu", callback_data="back")]]
 
     if not items:
-        await q.edit_message_text("📋 Nessuna playlist trovata.",
+        await _edit(q, "📋 Nessuna playlist trovata.",
             reply_markup=InlineKeyboardMarkup(back))
         return
 
@@ -1104,7 +1118,7 @@ async def _edit_playlists(q, user, page=0):
         rows.append(nav)
     rows += back
 
-    await q.edit_message_text(
+    await _edit(q, 
         f"{hdr_playlist()}\n\n"
         f"_Pag. {page+1}/{pages} — {total} playlist_\n\n"
         f"Premi una playlist per vedere i brani:",
@@ -1117,7 +1131,7 @@ async def _edit_playlists(q, user, page=0):
 # -------------------------------------------------------
 async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     if not user:
-        await q.edit_message_text("❌ Non connesso.")
+        await _edit(q, "❌ Non connesso.")
         return
 
     limit  = 6  # meno brani per pagina = bottoni più leggibili
@@ -1137,7 +1151,7 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
                                  "market": "IT"})
 
     if not tracks_data or tracks_data.get("_err"):
-        await q.edit_message_text(
+        await _edit(q, 
             "⚠️ Errore nel caricare i brani. Riprova.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
@@ -1187,7 +1201,7 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
 
     rows.append([InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")])
 
-    await q.edit_message_text(
+    await _edit(q, 
         f"📋 *{pl_name}*\n_{total} brani totali_\n\nPremi ▶️ per avviare un brano:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows)
