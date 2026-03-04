@@ -455,6 +455,7 @@ def _poll_user(user: dict):
             f"{bar} {pct}%\n"
             f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
             f"⛏️✨ *Mine Nackles AVVIATO!* ✨⛏️"
+            f"{firma()}"
         )
         _run_async(_send(tid, msg))
 
@@ -493,6 +494,7 @@ def daily_summary_scheduler():
                     f"🎵  Brani ascoltati: *{today['tracks_heard']}*\n"
                     f"⏱️  Minuti minati: *{today['mining_minutes']}*\n\n"
                     f"💎 _Continua così domani!_ 🚀"
+                    f"{firma()}"
                 )
                 _run_async(_send(tid, msg))
                 log.info(f"Daily summary inviato a {tid}")
@@ -503,6 +505,9 @@ def daily_summary_scheduler():
 # VISUAL DESIGN — testi e decorazioni
 # -------------------------------------------------------
 ACKI_IMAGE = "acki_music.png"  # immagine locale
+
+def firma() -> str:
+    return "\n\n`                    — Acki Jewels 💎`"
 
 # Header principale
 def hdr_main() -> str:
@@ -641,6 +646,7 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📆  Giorni attivi: *{total['days_active']}*\n\n"
             f"{mining_status_line(mining)}\n\n"
             f"_Ascolta musica → mina automaticamente_ 🚀"
+            f"{firma()}"
         )
     else:
         txt = (
@@ -654,6 +660,7 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"3️⃣  Mine Nackles parte in automatico ⛏️\n"
             f"4️⃣  Guarda le tue stats con /stats\n\n"
             f"✨ _Premi il bottone qui sotto_ ✨"
+            f"{firma()}"
         )
 
     if os.path.exists(ACKI_IMAGE):
@@ -723,6 +730,7 @@ async def _send_stats(tid: int, message, edit=False):
         f"🎶  Brani totali:    *{total['tracks_heard']}*\n"
         f"⏱️  Tempo totale:   *{fmt(total['mining_minutes'])}*\n"
         f"📆  Giorni attivi:  *{total['days_active']}*\n"
+        f"{firma()}"
     )
 
     kb = InlineKeyboardMarkup([[
@@ -1001,6 +1009,7 @@ async def _edit_status(q, user):
             f"⏹️ *Niente in riproduzione*\n"
             f"🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘\n\n"
             f"{m}"
+            f"{firma()}"
         )
     else:
         item    = data.get("item") or {}
@@ -1020,6 +1029,7 @@ async def _edit_status(q, user):
             f"{bar} {pct}%\n"
             f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
             f"{m}"
+            f"{firma()}"
         )
 
     await q.edit_message_text(txt, parse_mode="Markdown",
