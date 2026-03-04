@@ -43,11 +43,25 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # -------------------------------------------------------
-# CONFIG
+# CONFIG — funziona sia in locale (config.json) che su Railway (env vars)
 # -------------------------------------------------------
 CONFIG_FILE = "config.json"
 
 def load_config() -> dict:
+    # Railway: legge da variabili d'ambiente
+    if os.environ.get("TELEGRAM_TOKEN"):
+        log.info("Config da variabili d'ambiente (Railway)")
+        return {
+            "TELEGRAM_TOKEN":        os.environ["TELEGRAM_TOKEN"],
+            "SPOTIFY_CLIENT_ID":     os.environ.get("SPOTIFY_CLIENT_ID", "21675318528e48c9a7a5c85b1f53da54"),
+            "SPOTIFY_CLIENT_SECRET": os.environ.get("SPOTIFY_CLIENT_SECRET", "b582f0666fe9434ebd54f691a0d2d3b4"),
+            "OAUTH_CALLBACK_PORT":   int(os.environ.get("PORT", 8082)),
+            "POLL_INTERVAL_SEC":     int(os.environ.get("POLL_INTERVAL_SEC", 5)),
+            "DAILY_SUMMARY_HOUR":    int(os.environ.get("DAILY_SUMMARY_HOUR", 21)),
+            "PUBLIC_URL":            os.environ.get("PUBLIC_URL", ""),
+        }
+
+    # Locale: legge o crea config.json
     if not os.path.exists(CONFIG_FILE):
         print("\n" + "="*50)
         print("  PRIMA CONFIGURAZIONE — Listen & Mine Bot")
@@ -68,6 +82,7 @@ def load_config() -> dict:
             "OAUTH_CALLBACK_PORT":   8082,
             "POLL_INTERVAL_SEC":     5,
             "DAILY_SUMMARY_HOUR":    21,
+            "PUBLIC_URL":            "",
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
@@ -83,8 +98,15 @@ CLIENT_SECRET        = CFG["SPOTIFY_CLIENT_SECRET"]
 CALLBACK_PORT        = int(CFG.get("OAUTH_CALLBACK_PORT", 8082))
 POLL_INTERVAL        = int(CFG.get("POLL_INTERVAL_SEC", 5))
 DAILY_SUMMARY_HOUR   = int(CFG.get("DAILY_SUMMARY_HOUR", 21))
+PUBLIC_URL           = CFG.get("PUBLIC_URL", "")
 
-REDIRECT_URI     = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
+# Redirect URI: usa URL pubblico su Railway, locale in sviluppo
+if PUBLIC_URL:
+    REDIRECT_URI = f"{PUBLIC_URL}/callback"
+else:
+    REDIRECT_URI = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
+
+log.info(f"REDIRECT_URI = {REDIRECT_URI}")
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL= "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
