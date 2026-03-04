@@ -448,10 +448,10 @@ def _poll_user(user: dict):
                 mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
                 stats_increment(tid, minutes=mins)
             _run_async(_send(tid,
-                "🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘\n"
-                "⏹️ *Musica ferma*\n"
-                "💎 Mine Nackles in pausa\n"
-                "🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘"
+                f"`{SEP_S}`\n"
+                "⏹ *Musica ferma*\n"
+                "⚫ Mine Nackles in pausa\n"
+                f"`{SEP_S}`"
             ))
         return
 
@@ -472,14 +472,15 @@ def _poll_user(user: dict):
         _session_start[tid] = now_ts()
 
         album_line = f"💿 _{album}_\n" if album else ""
+        pb = progress_bar(pct)
         msg = (
-            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n"
+            f"{hdr_track()}\n"
             f"🎵 *{track}*\n"
-            f"👤 {artist}\n"
+            f"🔴 {artist}\n"
             f"{album_line}"
-            f"{bar} {pct}%\n"
-            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
-            f"⛏️✨ *Mine Nackles AVVIATO!* ✨⛏️"
+            f"{pb} `{pct}%`\n"
+            f"{hdr_track()}\n\n"
+            f"⛏️ *Mine Nackles AVVIATO!*"
             f"{firma()}"
         )
         _run_async(_send(tid, msg))
@@ -511,14 +512,15 @@ def daily_summary_scheduler():
 
                 name = user.get("first_name") or "utente"
                 msg  = (
-                    f"🌙💎〰️〰️〰️〰️〰️〰️〰️💎🌙\n"
-                    f"✨ *ACKI NACKI — REPORT SERALE* ✨\n"
-                    f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
-                    f"👤 *{name}* — oggi hai minato! 🎉\n\n"
-                    f"⛏️  Sessioni Mine Nackles: *{today['sessions']}*\n"
-                    f"🎵  Brani ascoltati: *{today['tracks_heard']}*\n"
-                    f"⏱️  Minuti minati: *{today['mining_minutes']}*\n\n"
-                    f"💎 _Continua così domani!_ 🚀"
+                    f"`{SEP}`\n"
+                    f"🌙 *ACKI NACKI · REPORT SERALE*\n"
+                    f"`{SEP}`\n\n"
+                    f"👤 *{name}* — ottimo oggi! 🔥\n\n"
+                    f"`▸ MINE NACKLES OGGI`\n"
+                    f"⛏️  Sessioni:  *{today['sessions']}*\n"
+                    f"🎵  Brani:     *{today['tracks_heard']}*\n"
+                    f"⏱️  Minuti:    *{today['mining_minutes']}*\n\n"
+                    f"🔴 _Continua domani!_"
                     f"{firma()}"
                 )
                 _run_async(_send(tid, msg))
@@ -531,51 +533,59 @@ def daily_summary_scheduler():
 # -------------------------------------------------------
 ACKI_IMAGE = "acki_music.png"  # immagine locale
 
-def firma() -> str:
-    return "\n\n`                    — Acki Jewels 💎`"
+# ─────────────────────────────────────────────────────────
+# OBSIDIAN EMBER DESIGN SYSTEM
+# Dark premium: carbone + cremisi + ambra  (Acki Jewels)
+# ─────────────────────────────────────────────────────────
+SEP   = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+SEP_S = "· · · · · · · · ·"
 
-# Header principale
+def firma() -> str:
+    return "\n`                — Acki Jewels 💎`"
+
 def hdr_main() -> str:
     return (
-        "💎✨💠〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️💠✨💎\n"
-        "‎\n"
-        "        🐝  *A C K I   N A C K I*  🐝\n"
-        "     🎵  *L I S T E N  &  M I N E*  🎵\n"
-        "‎\n"
-        "💎✨💠〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️💠✨💎"
+        f"`{SEP}`\n"
+        "    🐝  *A C K I   N A C K I*\n"
+        "    ⛏️  *L I S T E N  &  M I N E*\n"
+        f"`{SEP}`"
     )
 
 def hdr_menu() -> str:
     return (
-        "🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷\n"
-        "‎\n"
-        "  💎  *ACKI NACKI — MENU*  💎\n"
-        "‎\n"
-        "🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷🔹🔷"
+        f"`{SEP}`\n"
+        "  🔥  *ACKI NACKI · MENU*  🔥\n"
+        f"`{SEP}`"
     )
 
 def hdr_stats() -> str:
     return (
-        "🟣🟡🟢🔵🟠🟣🟡🟢🔵🟠🟣🟡\n"
-        "‎\n"
-        "  📊  *MINE NACKLES — STATS*  📊\n"
-        "‎\n"
-        "🟣🟡🟢🔵🟠🟣🟡🟢🔵🟠🟣🟡"
+        f"`{SEP}`\n"
+        "  📊  *MINE NACKLES · STATS*\n"
+        f"`{SEP}`"
     )
 
 def hdr_playlist() -> str:
     return (
-        "🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶\n"
-        "‎\n"
-        "  🎼  *LE TUE PLAYLIST*  🎼\n"
-        "‎\n"
-        "🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶🎵🎶"
+        f"`{SEP}`\n"
+        "  🎼  *LE TUE PLAYLIST*\n"
+        f"`{SEP}`"
     )
+
+def hdr_track() -> str:
+    return f"`{SEP_S}`"
 
 def mining_status_line(active: bool) -> str:
     if active:
-        return "💎 *Mine Nackles:* `ATTIVO` ⛏️✨"
-    return "🔘 *Mine Nackles:* `IN PAUSA`"
+        return "🔴 *Mine Nackles:* `● ATTIVO`  ⛏️"
+    return "⚫ *Mine Nackles:* `○ IN PAUSA`"
+
+def progress_bar(pct: int) -> str:
+    """Barra stile Obsidian Ember: blocchi pieni + vuoti."""
+    filled = pct // 10
+    return "🟥" * filled + "⬛" * (10 - filled)
+
+SPOTIFY_OPEN_URL = "https://open.spotify.com"
 
 # -------------------------------------------------------
 # TELEGRAM — send helpers
@@ -629,25 +639,29 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
     mining = bool(user and user.get("mining_active"))
     rows   = []
     if not authed:
-        rows.append([InlineKeyboardButton("🎵✨ Connetti Spotify ✨🎵", callback_data="connect")])
+        rows.append([InlineKeyboardButton("🎵 Connetti Spotify", callback_data="connect")])
     else:
         rows.append([
-            InlineKeyboardButton("🔷 Stato",        callback_data="status"),
-            InlineKeyboardButton("📊 Stats",         callback_data="stats"),
-        ])
-        rows.append([
-            InlineKeyboardButton("🎼 Le mie Playlist", callback_data="playlists"),
+            InlineKeyboardButton("🔴 Stato",   callback_data="status"),
+            InlineKeyboardButton("📊 Stats",   callback_data="stats"),
+            InlineKeyboardButton("🎼 Playlist", callback_data="playlists"),
         ])
         rows.append([InlineKeyboardButton(
-            "⏸️ 💎 Sospendi Mine Nackles" if mining else "💎⛏️ Avvia Mine Nackles",
+            "⏸ Sospendi Mine Nackles" if mining else "⛏️ Avvia Mine Nackles",
             callback_data="mining_off" if mining else "mining_on"
         )])
+        # Controlli riproduzione — riga grande
         rows.append([
-            InlineKeyboardButton("▶️",  callback_data="play"),
-            InlineKeyboardButton("⏸️", callback_data="pause"),
-            InlineKeyboardButton("⏭️", callback_data="next"),
+            InlineKeyboardButton("⏮",  callback_data="prev"),
+            InlineKeyboardButton("▶",  callback_data="play"),
+            InlineKeyboardButton("⏸",  callback_data="pause"),
+            InlineKeyboardButton("⏭",  callback_data="next"),
         ])
-        rows.append([InlineKeyboardButton("🔌 Disconnetti Spotify", callback_data="disconnect")])
+        # Apri Spotify + Disconnetti
+        rows.append([
+            InlineKeyboardButton("🎧 Apri Spotify", url=SPOTIFY_OPEN_URL),
+            InlineKeyboardButton("🔌 Disconnetti",  callback_data="disconnect"),
+        ])
     return InlineKeyboardMarkup(rows)
 
 # -------------------------------------------------------
@@ -741,27 +755,23 @@ async def _send_stats(tid: int, message, edit=False):
 
     def fmt(m): return f"{m//60}h {m%60}min" if m >= 60 else f"{m} min"
 
-    # Barra progresso brani oggi
-    t = min(today['tracks_heard'], 20)
-    bar = "💎" * t + "🔘" * (20 - t)
+    # Barra progresso brani oggi (max 10)
+    t   = min(today["tracks_heard"], 10)
+    bar = "🟥" * t + "⬛" * (10 - t)
 
     txt = (
         f"{hdr_stats()}\n\n"
         f"👤 *{name}*\n\n"
-        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
-        f"📅 *OGGI — {today_str()}*\n"
-        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
-        f"⛏️  Sessioni Mine:  *{today['sessions']}*\n"
-        f"🎵  Brani ascoltati: *{today['tracks_heard']}*\n"
-        f"⏱️  Tempo minato:   *{fmt(today['mining_minutes'])}*\n\n"
+        f"`▸ OGGI — {today_str()}`\n"
+        f"⛏️  Sessioni:  *{today['sessions']}*\n"
+        f"🎵  Brani:     *{today['tracks_heard']}*\n"
+        f"⏱️  Tempo:     *{fmt(today['mining_minutes'])}*\n"
         f"{bar}\n\n"
-        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
-        f"🏆 *TOTALE STORICO*\n"
-        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
-        f"💎  Sessioni totali: *{total['sessions']}*\n"
-        f"🎶  Brani totali:    *{total['tracks_heard']}*\n"
-        f"⏱️  Tempo totale:   *{fmt(total['mining_minutes'])}*\n"
-        f"📆  Giorni attivi:  *{total['days_active']}*\n"
+        f"`▸ TOTALE STORICO`\n"
+        f"🔴  Sessioni:  *{total['sessions']}*\n"
+        f"🎶  Brani:     *{total['tracks_heard']}*\n"
+        f"⏱️  Totale:    *{fmt(total['mining_minutes'])}*\n"
+        f"📆  Giorni:    *{total['days_active']}*\n"
         f"{firma()}"
     )
 
@@ -808,13 +818,16 @@ async def _player_action(q, user: dict, action: str):
     elif action == "next":
         res = sp_post(user, "/me/player/next")
         res = res or {}
+    elif action == "prev":
+        res = sp_post(user, "/me/player/previous")
+        res = res or {}
     else:
         return
 
     status = (res or {}).get("_status", 0)
 
     if status in (200, 202, 204):
-        icons = {"play": "▶️ Musica avviata!", "pause": "⏸️ Musica in pausa.", "next": "⏭️ Brano successivo!"}
+        icons = {"play": "▶️ Avviata!", "pause": "⏸️ Pausa.", "next": "⏭️ Avanti!", "prev": "⏮️ Indietro!"}
         await q.answer(icons.get(action, "✅"), show_alert=False)
     elif status == 403:
         await q.answer("⚠️ Serve Spotify Premium per questo comando.", show_alert=True)
@@ -904,6 +917,8 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(q, "⏸️ *Mining sospeso.*\nPuoi riattivarlo quando vuoi.",
             markup=main_kb(db_get(tid)))
 
+    elif data == "prev":
+        await _player_action(q, user, "prev")
     elif data == "play":
         await _player_action(q, user, "play")
     elif data == "pause":
@@ -1032,11 +1047,11 @@ async def _edit_status(q, user):
     if data is None:
         txt = "⚠️ Token scaduto. Usa /start."
     elif data.get("_204") or not data.get("is_playing"):
-        m   = "⛏️✨ Mine Nackles pronto — aspetta musica 🎵" if user.get("mining_active") else "🔘 Mine Nackles in pausa"
+        m   = "⛏️ Mine Nackles pronto — aspetta musica" if user.get("mining_active") else "⚫ Mine Nackles in pausa"
         txt = (
-            f"🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘\n"
-            f"⏹️ *Niente in riproduzione*\n"
-            f"🔘〰️〰️〰️〰️〰️〰️〰️〰️〰️🔘\n\n"
+            f"`{SEP_S}`\n"
+            f"⏹ *Nessuna riproduzione*\n"
+            f"`{SEP_S}`\n\n"
             f"{m}"
             f"{firma()}"
         )
@@ -1048,15 +1063,15 @@ async def _edit_status(q, user):
         prog    = data.get("progress_ms", 0)
         dur     = max(item.get("duration_ms", 1), 1)
         pct     = int(prog / dur * 100)
-        bar     = "💎" * (pct // 10) + "🔘" * (10 - pct // 10)
-        m       = "⛏️✨ Mine Nackles ATTIVO" if user.get("mining_active") else "🔘 Mine Nackles in pausa"
+        bar     = progress_bar(pct)
+        m       = "⛏️ Mine Nackles `ATTIVO`" if user.get("mining_active") else "⚫ Mine Nackles `PAUSA`"
         txt     = (
-            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n"
-            f"▶️ *{track}*\n"
-            f"👤 {artist}\n"
+            f"{hdr_track()}\n"
+            f"▶ *{track}*\n"
+            f"🔴 {artist}\n"
             f"💿 _{album}_\n\n"
-            f"{bar} {pct}%\n"
-            f"💎〰️〰️〰️〰️〰️〰️〰️〰️〰️💎\n\n"
+            f"{bar} `{pct}%`\n"
+            f"{hdr_track()}\n\n"
             f"{m}"
             f"{firma()}"
         )
@@ -1148,10 +1163,11 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     total  = tracks_data.get("total", 0)
     pages  = max(1, (total + limit - 1) // limit)
 
-    # Prendi nome e uri dalla playlist
-    pl_data = sp_get(user, f"/playlists/{pl_id}", params={"fields": "name,uri"})
+    # Prendi nome e uri dalla playlist (senza fields filter per compatibilità)
+    pl_data = sp_get(user, f"/playlists/{pl_id}")
     pl_name = (pl_data or {}).get("name", "Playlist")
     pl_uri  = (pl_data or {}).get("uri", "")
+    log.info(f"Playlist info: name={pl_name} uri={pl_uri} err={( pl_data or {}).get('_err')}")
 
     items = tracks_data.get("items", [])
     rows  = []
