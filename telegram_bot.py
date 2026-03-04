@@ -411,7 +411,12 @@ def _run_async(coro):
         log.error(f"Async error: {e}")
 
 def _start_oauth_server():
-    _oauth_app.run("127.0.0.1", CALLBACK_PORT, debug=False, use_reloader=False)
+    # Su Railway: ascolta su 0.0.0.0 con la porta assegnata da Railway
+    # In locale: ascolta su 127.0.0.1:8082
+    host = "0.0.0.0" if PUBLIC_URL else "127.0.0.1"
+    port = int(os.environ.get("PORT", CALLBACK_PORT))
+    log.info(f"Flask OAuth server su {host}:{port}")
+    _oauth_app.run(host, port, debug=False, use_reloader=False)
 
 # -------------------------------------------------------
 # MINING MONITOR
