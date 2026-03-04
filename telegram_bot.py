@@ -1231,7 +1231,7 @@ def main():
     print(f"  Daily summary ogni giorno alle {DAILY_SUMMARY_HOUR}:00")
     print("="*50 + "\n")
 
-    async def _set_loop():
+    async def _set_loop(app):
         global _main_loop
         _main_loop = asyncio.get_event_loop()
     
