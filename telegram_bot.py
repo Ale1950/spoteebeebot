@@ -585,7 +585,7 @@ def progress_bar(pct: int) -> str:
     return "🟥" * filled + "⬛" * (10 - filled)
 
 SPOTIFY_OPEN_URL = "https://open.spotify.com"  # fallback web
-SPOTIFY_APP_URL  = "spotify://"  # deep link app nativa
+SPOTIFY_APP_URL  = "https://open.spotify.com"  # deep link web (spotify:// non supportato da Telegram)
 
 # -------------------------------------------------------
 # TELEGRAM — send helpers
