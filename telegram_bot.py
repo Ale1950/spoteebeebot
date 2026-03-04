@@ -583,7 +583,7 @@ async def _send(tid: int, text: str, markup=None):
     try:
         await _tg_app.bot.send_message(
             chat_id=tid, text=text,
-            markup=markup
+            reply_markup=markup
         )
     except Exception as e:
         log.error(f"Send error a {tid}: {e}")
@@ -591,14 +591,14 @@ async def _send(tid: int, text: str, markup=None):
 async def _edit(q, txt: str, markup=None):
     """Modifica il messaggio sia se è foto (caption) che testo normale."""
     try:
-        await _edit(q, txt, markup)
+        await q.edit_message_caption(caption=txt, parse_mode="Markdown", reply_markup=markup)
     except Exception:
         try:
-            await _edit(q, markup=markup)
+            await q.edit_message_text(text=txt, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
             log.error(f"Edit error: {e}")
 
-
+async def _send_photo(tid: int, caption: str, markup=None):
     """Manda il messaggio con l'immagine Acki Jewels come header."""
     if not _tg_app:
         return
@@ -609,7 +609,8 @@ async def _edit(q, txt: str, markup=None):
                     chat_id=tid,
                     photo=img,
                     caption=caption,
-                    markup=markup
+                    parse_mode="Markdown",
+                    reply_markup=markup
                 )
         else:
             await _send(tid, caption, markup)
@@ -698,7 +699,7 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_photo(
                 photo=img,
                 caption=txt,
-                markup=main_kb(user)
+                reply_markup=main_kb(user)
             )
     else:
         await update.message.reply_text(txt, main_kb(user))
@@ -716,7 +717,7 @@ async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_photo(
                 photo=img,
                 caption=txt,
-                markup=main_kb(user)
+                reply_markup=main_kb(user)
             )
     else:
         await update.message.reply_text(txt, main_kb(user))
