@@ -1129,27 +1129,29 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     limit  = 6  # meno brani per pagina = bottoni più leggibili
     offset = page * limit
 
-    # Carica info playlist
-    pl_data = sp_get(user, f"/playlists/{pl_id}",
-                     params={"fields": "name,uri,tracks.total"})
-    pl_name = (pl_data or {}).get("name", "Playlist")
-    pl_uri  = (pl_data or {}).get("uri", "")
-    total   = (pl_data or {}).get("tracks", {}).get("total", 0)
-    pages   = max(1, (total + limit - 1) // limit)
-
-    # Carica brani (senza fields filter per evitare problemi)
+    # Carica brani e info playlist in un'unica chiamata
     tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
-                         params={"limit": limit, "offset": offset,
-                                 "market": "IT"})
+                         params={"limit": limit, "offset": offset})
 
-    if not tracks_data or tracks_data.get("_err"):
-        await _edit(q, 
-            "⚠️ Errore nel caricare i brani. Riprova.",
+    if not tracks_data or tracks_data.get("_err") or tracks_data.get("_204"):
+        err_code = (tracks_data or {}).get("_err", "?")
+        log.error(f"Playlist tracks error: pl_id={pl_id} err={err_code}")
+        await _edit(q,
+            f"⚠️ Errore nel caricare i brani (cod. {err_code}).\nRiprova tra qualche secondo.",
             markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Riprova", callback_data=f"pl:{pl_id}"),
                 InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
             ]])
         )
         return
+
+    total  = tracks_data.get("total", 0)
+    pages  = max(1, (total + limit - 1) // limit)
+
+    # Prendi nome e uri dalla playlist
+    pl_data = sp_get(user, f"/playlists/{pl_id}", params={"fields": "name,uri"})
+    pl_name = (pl_data or {}).get("name", "Playlist")
+    pl_uri  = (pl_data or {}).get("uri", "")
 
     items = tracks_data.get("items", [])
     rows  = []
