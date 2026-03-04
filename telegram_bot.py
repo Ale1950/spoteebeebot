@@ -401,8 +401,7 @@ def oauth_cb():
             "`▸ ACKI NACKI è pronto!`\n"
             "⛏️ Mine Nackles parte automaticamente\n"
             "non appena ascolti musica 🎵\n\n"
-            "• /stats — le tue statistiche\n"
-            "• /menu — tutti i controlli"
+            "Usa /menu per tutti i controlli"
         )
     else:
         product_label = (profile or {}).get("product", "sconosciuto")
@@ -413,12 +412,22 @@ def oauth_cb():
             f"Piano rilevato: *{product_label}*\n\n"
             "I comandi play/pause/next richiedono\n"
             "*Spotify Premium*. Hai connesso l'account\n"
-            "sbagliato?\n\n"
-            "🔴 Premi *Disconnetti* nel menu,\n"
-            "poi riconnetti con l'account Premium."
+            "sbagliato? Usa /menu → Riconnetti."
         )
 
     threading.Thread(target=_async_notify, args=(tid, confirm_msg), daemon=True).start()
+    # Manda anche il menu completo dopo 2 secondi
+    def _send_menu_after(tid_inner, user_inner):
+        import time as _time
+        _time.sleep(2)
+        mining  = bool((user_inner or {}).get("mining_active"))
+        menu_txt = (
+            f"{hdr_menu()}\n\n"
+            f"{mining_status_line(mining)}\n"
+            f"`▸ scegli un'opzione`"
+        )
+        _run_async(_send_photo(tid_inner, menu_txt, main_kb(user_inner)))
+    threading.Thread(target=_send_menu_after, args=(tid, db_get(tid)), daemon=True).start()
 
     return """<html>
 <head>
@@ -691,15 +700,26 @@ async def _send(tid: int, text: str, markup=None):
     except Exception as e:
         log.error(f"Send error a {tid}: {e}")
 
-async def _edit(q, txt: str, markup=None):
-    """Modifica il messaggio sia se è foto (caption) che testo normale."""
-    try:
-        await q.edit_message_caption(caption=txt, parse_mode="Markdown", reply_markup=markup)
-    except Exception:
+async def _edit(q, txt: str = "", markup=None):
+    """Modifica il messaggio sia se è foto (caption) che testo normale.
+    Se txt è vuoto, modifica solo il markup senza toccare il testo."""
+    if txt:
+        try:
+            await q.edit_message_caption(caption=txt, parse_mode="Markdown", reply_markup=markup)
+            return
+        except Exception:
+            pass
         try:
             await q.edit_message_text(text=txt, parse_mode="Markdown", reply_markup=markup)
+            return
         except Exception as e:
             log.error(f"Edit error: {e}")
+    else:
+        # Solo aggiorna la tastiera
+        try:
+            await q.edit_message_reply_markup(reply_markup=markup)
+        except Exception as e:
+            log.error(f"Edit markup error: {e}")
 
 async def _send_photo(tid: int, caption: str, markup=None):
     """Manda il messaggio con l'immagine Acki Jewels come header."""
@@ -747,17 +767,18 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("⏸",  callback_data="pause"),
             InlineKeyboardButton("⏭",  callback_data="next"),
         ])
-        # Shuffle + Repeat
-        shuffle_on = bool(user and user.get("shuffle_on"))
-        repeat_mode = (user or {}).get("repeat_mode", "off")  # off / context / track
+        # Shuffle + Repeat — emoji cambiano quando attivi
+        shuffle_on  = bool(user and user.get("shuffle_on"))
+        repeat_mode = (user or {}).get("repeat_mode", "off")
         rows.append([
             InlineKeyboardButton(
-                "🔀 Shuffle ON" if shuffle_on else "🔀 Shuffle",
+                "🔀 ● Shuffle ON" if shuffle_on else "🔀 Shuffle",
                 callback_data="shuffle_toggle"
             ),
             InlineKeyboardButton(
-                "🔂 1 brano" if repeat_mode == "track" else
-                ("🔁 Playlist" if repeat_mode == "context" else "🔁 Repeat"),
+                "🔂 ● 1 brano"   if repeat_mode == "track"   else
+                "🔁 ● Playlist"  if repeat_mode == "context" else
+                "🔁 Repeat",
                 callback_data="repeat_toggle"
             ),
         ])
@@ -967,14 +988,8 @@ async def _toggle_shuffle(q, user: dict):
         db_set(tid, shuffle_on=1 if new_state else 0)
         label = "🔀 Shuffle ON ✅" if new_state else "🔀 Shuffle OFF"
         await q.answer(label, show_alert=False)
-        # Aggiorna tastiera
         updated_user = db_get(tid)
-        await _edit(q,
-            f"`{SEP}`\n"
-            f"{'🔀 *Shuffle attivato!*' if new_state else '🔀 *Shuffle disattivato*'}\n"
-            f"`{SEP}`",
-            markup=main_kb(updated_user)
-        )
+        await _edit(q, markup=main_kb(updated_user))   # aggiorna solo i bottoni
     elif status == 403:
         await q.answer("⚠️ Serve Spotify Premium.", show_alert=True)
     else:
@@ -1005,12 +1020,7 @@ async def _toggle_repeat(q, user: dict):
         db_set(tid, repeat_mode=new_mode)
         await q.answer(labels.get(new_mode, "✅"), show_alert=False)
         updated_user = db_get(tid)
-        await _edit(q,
-            f"`{SEP}`\n"
-            f"{labels.get(new_mode, '🔁 Repeat')}\n"
-            f"`{SEP}`",
-            markup=main_kb(updated_user)
-        )
+        await _edit(q, markup=main_kb(updated_user))   # aggiorna solo i bottoni
     elif status == 403:
         await q.answer("⚠️ Serve Spotify Premium.", show_alert=True)
     else:
@@ -1203,15 +1213,54 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "disconnect":
         db_set(tid, access_token=None, refresh_token=None,
-               mining_active=0, last_track="")
-        await _edit(q, 
-            "🔌 *Disconnesso da Spotify.*\nUsa /start per riconnetterti.",
-            parse_mode="Markdown"
+               mining_active=0, last_track="", shuffle_on=0, repeat_mode="off")
+        await _edit(q,
+            f"`{SEP}`\n"
+            "🔌 *Disconnesso da Spotify*\n"
+            f"`{SEP}`\n\n"
+            "Usa il bottone per riconnetterti.",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎵 Connetti Spotify", callback_data="connect")
+            ]])
         )
 
+    elif data == "reconnect":
+        # Disconnette silenziosamente e avvia subito il flusso di connessione
+        db_set(tid, access_token=None, refresh_token=None,
+               mining_active=0, last_track="", shuffle_on=0, repeat_mode="off")
+        # Rimanda all'handler connect riusando lo stesso codice
+        import secrets as _sec, urllib.parse as _urlp
+        state           = _sec.token_urlsafe(16)
+        _pending[state] = tid
+        params = {
+            "response_type": "code", "client_id": CLIENT_ID,
+            "redirect_uri": REDIRECT_URI, "scope": SCOPE,
+            "state": state,
+        }
+        url = SPOTIFY_AUTH_URL + "?" + _urlp.urlencode(params)
+        txt = (
+            f"`{SEP}`\n"
+            "🔐 *RICONNETTI SPOTIFY PREMIUM*\n"
+            f"`{SEP}`\n\n"
+            "Token aggiornato — autorizza di nuovo:\n\n"
+            f"👉 [🎧 Autorizza Spotify Premium]({url})\n\n"
+            "⚠️ _Assicurati di usare l'account Premium_"
+            f"{firma()}"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💎 Ho autorizzato!", callback_data="check_auth")
+        ]])
+        await _edit(q, txt, markup=kb)
+
     elif data == "back":
-        await _edit(q,
-            markup=main_kb(db_get(tid)))
+        user = db_get(tid)
+        mining = bool(user and user.get("mining_active"))
+        txt = (
+            f"{hdr_menu()}\n\n"
+            f"{mining_status_line(mining)}\n"
+            f"`▸ scegli un'opzione`"
+        )
+        await _edit(q, txt, markup=main_kb(user))
 
     elif data == "noop":
         pass  # bottone decorativo, non fa nulla
@@ -1358,7 +1407,7 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
                 InlineKeyboardButton("🔄 Riprova",    callback_data=f"pl:{pl_id}"),
                 InlineKeyboardButton("🔙 Playlist",   callback_data="back_playlists"),
             ],[
-                InlineKeyboardButton("🔌 Riconnetti", callback_data="disconnect"),
+                InlineKeyboardButton("🔌 Riconnetti Spotify", callback_data="reconnect"),
             ]])
         )
         return
@@ -1412,10 +1461,15 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     if nav:
         rows.append(nav)
 
-    rows.append([InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")])
+    rows.append([
+        InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+        InlineKeyboardButton("🏠 Menu",     callback_data="back"),
+    ])
 
-    await _edit(q, 
-        f"📋 *{pl_name}*\n_{total} brani totali_\n\nPremi ▶️ per avviare un brano:",
+    await _edit(q,
+        f"{hdr_playlist()}\n\n"
+        f"📋 *{pl_name}*  _({total} brani)_\n\n"
+        f"Premi ▶️ per avviare:",
         markup=InlineKeyboardMarkup(rows)
     )
 
