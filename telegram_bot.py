@@ -110,17 +110,15 @@ log.info(f"REDIRECT_URI = {REDIRECT_URI}")
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL= "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
-# Scope base — non richiedono Premium, funzionano con account Free
+# Scope completi — playlist-read-private obbligatorio per leggere brani
 SCOPE = (
     "user-read-playback-state "
     "user-read-currently-playing "
     "playlist-read-private "
     "playlist-read-collaborative "
+    "user-library-read "
     "user-modify-playback-state"
 )
-# Nota: user-modify-playback-state richiede Premium su Spotify
-# ma NON blocca il login — Spotify lo accetta anche su Free
-# (i comandi play/pause daranno 403 su Free, ma il login funziona)
 
 # -------------------------------------------------------
 # DATABASE — utenti + statistiche
@@ -641,6 +639,10 @@ ACKI_IMAGE = "acki_music.png"  # immagine locale
 SEP   = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
 SEP_S = "· · · · · · · · ·"
 
+def menu_row():
+    """Riga standard con tasto Menu — appare in ogni schermata."""
+    return [InlineKeyboardButton("🏠 Menu", callback_data="back")]
+
 def firma() -> str:
     return "\n`                — Acki Jewels 💎`"
 
@@ -1081,8 +1083,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "response_type": "code", "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI, "scope": SCOPE,
             "state": state,
-            # show_dialog: NON forzare re-login — usa sessione già attiva
-            # così chi ha Premium nel browser viene riconosciuto direttamente
+            "show_dialog": "true",   # forza consenso → scope sempre aggiornati
         }
         url = SPOTIFY_AUTH_URL + "?" + urllib.parse.urlencode(params)
         txt = (
@@ -1137,16 +1138,26 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "mining_on":
         db_set(tid, mining_active=1)
-        await _edit(q, "▶️ *Mining riattivato!*\nIl bot monitora Spotify in automatico.",
-            markup=main_kb(db_get(tid)))
+        user_upd = db_get(tid)
+        txt_on = (
+            f"{hdr_menu()}\n\n"
+            "⛏️ *Mine Nackles ATTIVO!*\n"
+            "`▸ scegli un'opzione`"
+        )
+        await _edit(q, txt_on, markup=main_kb(user_upd))
 
     elif data == "mining_off":
         db_set(tid, mining_active=0, last_track="")
         if tid in _session_start:
             mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
             stats_increment(tid, minutes=mins)
-        await _edit(q, "⏸️ *Mining sospeso.*\nPuoi riattivarlo quando vuoi.",
-            markup=main_kb(db_get(tid)))
+        user_upd = db_get(tid)
+        txt_off = (
+            f"{hdr_menu()}\n\n"
+            "⚫ *Mine Nackles SOSPESO*\n"
+            "`▸ scegli un'opzione`"
+        )
+        await _edit(q, txt_off, markup=main_kb(user_upd))
 
     elif data == "prev":
         await _player_action(q, user, "prev")
@@ -1190,12 +1201,12 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         active  = [d for d in devices if d.get("is_active")]
 
         if not devices:
-            await _edit(q, 
+            await _edit(q,
                 "📱 *Spotify non è aperto.*\n\n"
-                "Apri Spotify prima di avviare una playlist.\n\n"
-                f"👉 [Apri Spotify]({spotify_url})",
+                "Apri Spotify prima di avviare una playlist.",
                 markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+                    InlineKeyboardButton("🏠 Menu",     callback_data="back"),
                 ]])
             )
             return
@@ -1225,12 +1236,12 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         active  = [d for d in devices if d.get("is_active")]
 
         if not devices:
-            await _edit(q, 
+            await _edit(q,
                 "📱 *Spotify non è aperto.*\n\n"
-                f"Apri Spotify prima di avviare un brano.\n\n"
-                f"👉 [Apri in Spotify]({spotify_url})",
+                "Apri Spotify prima di avviare un brano.",
                 markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+                    InlineKeyboardButton("🏠 Menu",     callback_data="back"),
                 ]])
             )
             return
@@ -1277,6 +1288,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "response_type": "code", "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI, "scope": SCOPE,
             "state": state,
+            "show_dialog": "true",   # forza consenso → scope sempre aggiornati
         }
         url = SPOTIFY_AUTH_URL + "?" + _urlp.urlencode(params)
         txt = (
@@ -1352,11 +1364,11 @@ async def _edit_status(q, user):
             f"{firma()}"
         )
 
-    await _edit(q,
+    await _edit(q, txt,
         markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Aggiorna", callback_data="status"),
             InlineKeyboardButton("📊 Stats",    callback_data="stats"),
-            InlineKeyboardButton("🔙 Menu",     callback_data="back"),
+            InlineKeyboardButton("🏠 Menu",     callback_data="back"),
         ]]))
 
 # -------------------------------------------------------
@@ -1377,8 +1389,15 @@ async def _edit_playlists(q, user, page=0):
     back = [[InlineKeyboardButton("🔙 Menu", callback_data="back")]]
 
     if not items:
-        await _edit(q, "📋 Nessuna playlist trovata.",
-            markup=InlineKeyboardMarkup(back))
+        await _edit(q,
+            f"{hdr_playlist()}\n\n"
+            "📋 *Nessuna playlist trovata.*\n\n"
+            "_Assicurati di avere playlist su Spotify_",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Ricarica",  callback_data="playlists"),
+                InlineKeyboardButton("🏠 Menu",      callback_data="back"),
+            ]])
+        )
         return
 
     rows = []
@@ -1402,10 +1421,11 @@ async def _edit_playlists(q, user, page=0):
         rows.append(nav)
     rows += back
 
-    await _edit(q, 
+    rows.append(menu_row())
+    await _edit(q,
         f"{hdr_playlist()}\n\n"
         f"_Pag. {page+1}/{pages} — {total} playlist_\n\n"
-        f"Premi una playlist per vedere i brani:",
+        f"Scegli una playlist:",
         markup=InlineKeyboardMarkup(rows)
     )
 
@@ -1453,10 +1473,12 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
             )
         await _edit(q, msg,
             markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Riprova",    callback_data=f"pl:{pl_id}"),
-                InlineKeyboardButton("🔙 Playlist",   callback_data="back_playlists"),
+                InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
+                InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
             ],[
                 InlineKeyboardButton("🔌 Riconnetti Spotify", callback_data="reconnect"),
+            ],[
+                InlineKeyboardButton("🏠 Menu", callback_data="back"),
             ]])
         )
         return
@@ -1514,6 +1536,7 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
         InlineKeyboardButton("🏠 Menu",     callback_data="back"),
     ])
+    # menu_row già incluso sopra
 
     await _edit(q,
         f"{hdr_playlist()}\n\n"
