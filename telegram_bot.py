@@ -259,6 +259,7 @@ def do_refresh(user: dict) -> bool:
         timeout=15,
     )
     if r.status_code != 200:
+        log.error(f"Refresh token failed: {r.status_code} {r.text}")
         return False
     d = r.json()
     db_set(user["telegram_id"],
@@ -266,6 +267,7 @@ def do_refresh(user: dict) -> bool:
            refresh_token = d.get("refresh_token", rt),
            expires_in    = d.get("expires_in", 3600),
            token_at      = now_ts())
+    log.info(f"Token refreshed for {user['telegram_id']}, scopes: {d.get('scope','?')}")
     return True
 
 def valid_token(user: dict) -> str | None:
@@ -278,6 +280,7 @@ def valid_token(user: dict) -> str | None:
 def sp_get(user: dict, path: str, params: dict = None) -> dict | None:
     tok = valid_token(user)
     if not tok:
+        log.warning(f"sp_get {path}: no valid token")
         return None
     r = requests.get(
         SPOTIFY_API_BASE + path,
@@ -288,7 +291,12 @@ def sp_get(user: dict, path: str, params: dict = None) -> dict | None:
     if r.status_code == 204:
         return {"_204": True}
     if r.status_code >= 400:
-        return {"_err": r.status_code}
+        try:
+            body = r.json()
+        except Exception:
+            body = r.text
+        log.error(f"sp_get {path} → {r.status_code}: {body}")
+        return {"_err": r.status_code, "_body": body}
     try:
         return r.json()
     except Exception:
@@ -546,12 +554,12 @@ def _poll_user(user: dict):
             if tid in _session_start:
                 mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
                 stats_increment(tid, minutes=mins)
-            _run_async(_send(tid,
-                f"`{SEP_S}`\n"
-                "⏹ *Musica ferma*\n"
-                "⚫ Mine Nackles in pausa\n"
-                f"`{SEP_S}`"
-            ))
+            stopped_txt = (
+                "⏹️  *Nessuna riproduzione*\n"
+                "`· · · · · · · · ·`\n"
+                "⚫ Mine Nackles in pausa"
+            )
+            _run_async(_update_now_playing(tid, stopped_txt))
         return
 
     # Musica in play
@@ -570,18 +578,13 @@ def _poll_user(user: dict):
         stats_increment(tid, sessions=1, tracks=1)
         _session_start[tid] = now_ts()
 
-        album_line = f"💿 _{album}_\n" if album else ""
-        msg = (
-            f"{hdr_track()}\n"
-            f"🎵 *{track}*\n"
-            f"🔴 {artist}\n"
-            f"{album_line}"
-            f"`▸ NUOVO BRANO`\n"
-            f"{hdr_track()}\n\n"
-            f"⛏️ *Mine Nackles AVVIATO!*"
-            f"{firma()}"
+        now_playing_txt = (
+            f"▶️  *{track}*\n"
+            f"    {artist}\n"
+            "`· · · · · · · · ·`\n"
+            "⛏️ Mine Nackles attivo"
         )
-        _run_async(_send(tid, msg))
+        _run_async(_update_now_playing(tid, now_playing_txt))
 
 # -------------------------------------------------------
 # DAILY SUMMARY — ogni sera alle DAILY_SUMMARY_HOUR
@@ -695,10 +698,40 @@ async def _send(tid: int, text: str, markup=None):
     try:
         await _tg_app.bot.send_message(
             chat_id=tid, text=text,
+            parse_mode="Markdown",
             reply_markup=markup
         )
     except Exception as e:
         log.error(f"Send error a {tid}: {e}")
+
+async def _update_now_playing(tid: int, text: str):
+    """Aggiorna il messaggio fisso 'now playing'.
+    Se esiste già lo edita in-place, altrimenti ne crea uno nuovo e salva l'id."""
+    if not _tg_app:
+        return
+    user = db_get(tid)
+    msg_id = (user or {}).get("now_playing_msg_id", 0) or 0
+    if msg_id:
+        try:
+            await _tg_app.bot.edit_message_text(
+                chat_id=tid,
+                message_id=msg_id,
+                text=text,
+                parse_mode="Markdown"
+            )
+            return
+        except Exception:
+            # Messaggio troppo vecchio o cancellato — ne creiamo uno nuovo
+            pass
+    try:
+        sent = await _tg_app.bot.send_message(
+            chat_id=tid,
+            text=text,
+            parse_mode="Markdown"
+        )
+        db_set(tid, now_playing_msg_id=sent.message_id)
+    except Exception as e:
+        log.error(f"Now playing send error a {tid}: {e}")
 
 async def _edit(q, txt: str = "", markup=None):
     """Modifica il messaggio sia se è foto (caption) che testo normale.
@@ -976,24 +1009,28 @@ async def _toggle_shuffle(q, user: dict):
     devices = [(d or {}) for d in (devices_data or {}).get("devices", [])]
     active  = [d for d in devices if d.get("is_active")]
     if not devices:
-        await q.answer("⚠️ Apri Spotify prima di usare shuffle.", show_alert=True)
+        # q.answer già chiamato in h_button — usiamo show_alert
+        await q.message.reply_text("⚠️ Apri Spotify prima di usare shuffle.")
         return
 
     device_id = (active[0] if active else devices[0])["id"]
     res    = sp_put(user, "/me/player/shuffle",
                     params={"state": state_str, "device_id": device_id})
     status = (res or {}).get("_status", 0)
+    log.info(f"Shuffle toggle → state={state_str} device={device_id} result={status}")
 
     if status in (200, 202, 204):
         db_set(tid, shuffle_on=1 if new_state else 0)
-        label = "🔀 Shuffle ON ✅" if new_state else "🔀 Shuffle OFF"
-        await q.answer(label, show_alert=False)
+        # Aggiorna subito il markup — il ● apparirà sul bottone
         updated_user = db_get(tid)
-        await _edit(q, markup=main_kb(updated_user))   # aggiorna solo i bottoni
+        await _edit(q, markup=main_kb(updated_user))
+        # Notifica toast
+        label = "🔀 Shuffle ON ✅" if new_state else "🔀 Shuffle OFF ⬜"
+        await q.message.reply_text(label)
     elif status == 403:
-        await q.answer("⚠️ Serve Spotify Premium.", show_alert=True)
+        await q.message.reply_text("⚠️ Serve Spotify Premium per Shuffle.")
     else:
-        await q.answer(f"⚠️ Errore ({status})", show_alert=True)
+        await q.message.reply_text(f"⚠️ Errore Spotify ({status}) su Shuffle.")
 
 
 async def _toggle_repeat(q, user: dict):
@@ -1008,23 +1045,25 @@ async def _toggle_repeat(q, user: dict):
     devices = [(d or {}) for d in (devices_data or {}).get("devices", [])]
     active  = [d for d in devices if d.get("is_active")]
     if not devices:
-        await q.answer("⚠️ Apri Spotify prima di usare repeat.", show_alert=True)
+        await q.message.reply_text("⚠️ Apri Spotify prima di usare repeat.")
         return
 
     device_id = (active[0] if active else devices[0])["id"]
     res    = sp_put(user, "/me/player/repeat",
                     params={"state": new_mode, "device_id": device_id})
     status = (res or {}).get("_status", 0)
+    log.info(f"Repeat toggle → mode={new_mode} device={device_id} result={status}")
 
     if status in (200, 202, 204):
         db_set(tid, repeat_mode=new_mode)
-        await q.answer(labels.get(new_mode, "✅"), show_alert=False)
+        # Aggiorna subito il markup — il ● apparirà sul bottone
         updated_user = db_get(tid)
-        await _edit(q, markup=main_kb(updated_user))   # aggiorna solo i bottoni
+        await _edit(q, markup=main_kb(updated_user))
+        await q.message.reply_text(labels.get(new_mode, "✅"))
     elif status == 403:
-        await q.answer("⚠️ Serve Spotify Premium.", show_alert=True)
+        await q.message.reply_text("⚠️ Serve Spotify Premium per Repeat.")
     else:
-        await q.answer(f"⚠️ Errore ({status})", show_alert=True)
+        await q.message.reply_text(f"⚠️ Errore Spotify ({status}) su Repeat.")
 
 
 async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1213,7 +1252,8 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "disconnect":
         db_set(tid, access_token=None, refresh_token=None,
-               mining_active=0, last_track="", shuffle_on=0, repeat_mode="off")
+               mining_active=0, last_track="", shuffle_on=0, repeat_mode="off",
+               now_playing_msg_id=0)
         await _edit(q,
             f"`{SEP}`\n"
             "🔌 *Disconnesso da Spotify*\n"
@@ -1227,7 +1267,8 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "reconnect":
         # Disconnette silenziosamente e avvia subito il flusso di connessione
         db_set(tid, access_token=None, refresh_token=None,
-               mining_active=0, last_track="", shuffle_on=0, repeat_mode="off")
+               mining_active=0, last_track="", shuffle_on=0, repeat_mode="off",
+               now_playing_msg_id=0)
         # Rimanda all'handler connect riusando lo stesso codice
         import secrets as _sec, urllib.parse as _urlp
         state           = _sec.token_urlsafe(16)
@@ -1386,21 +1427,29 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     if not tracks_data or tracks_data.get("_err") or tracks_data.get("_204"):
         err_code = (tracks_data or {}).get("_err", "?")
         log.error(f"Playlist tracks error: pl_id={pl_id} err={err_code} data={tracks_data}")
+        body_info = str((tracks_data or {}).get("_body", ""))[:120]
         if str(err_code) == "403":
             msg = (
                 f"`{SEP}`\n"
-                f"🔒 *Playlist non accessibile*\n"
+                f"🔒 *Errore 403 — Permessi mancanti*\n"
                 f"`{SEP}`\n\n"
-                f"`▸ CAUSE POSSIBILI`\n"
-                "• Playlist di Spotify (Discover Weekly ecc)\n"
-                "• Token scaduto o scope mancante\n\n"
-                "🔴 _Disconnetti e riconnetti Spotify_\n"
-                "_per aggiornare i permessi_"
+                "Il token attuale non ha i permessi\n"
+                "per leggere i brani delle playlist.\n\n"
+                "🔴 *Soluzione: premi Riconnetti Spotify*\n"
+                "per ottenere un nuovo token con\n"
+                "tutti i permessi aggiornati.\n\n"
+                f"`{body_info}`"
+            )
+        elif str(err_code) == "401":
+            msg = (
+                f"⚠️ *Token scaduto* (401)\n"
+                "Premi Riconnetti per rinnovarlo."
             )
         else:
             msg = (
-                f"⚠️ Errore `{err_code}` nel caricare i brani.\n"
-                "Riprova tra qualche secondo."
+                f"⚠️ Errore Spotify `{err_code}`:\n"
+                f"`{body_info}`\n\n"
+                "Riprova o premi Riconnetti."
             )
         await _edit(q, msg,
             markup=InlineKeyboardMarkup([[
