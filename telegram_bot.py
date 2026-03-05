@@ -167,6 +167,7 @@ def db_init():
             "now_playing_msg_id": "INTEGER DEFAULT 0",
             "shuffle_on":         "INTEGER DEFAULT 0",
             "repeat_mode":        "TEXT DEFAULT 'off'",
+            "menu_msg_id":        "INTEGER DEFAULT 0",
         }
         for col, typedef in migrations.items():
             if col not in existing:
@@ -571,6 +572,9 @@ def _poll_user(user: dict):
                 "⚫ Mine Nackles in pausa"
             )
             _run_async(_update_now_playing(tid, stopped_txt))
+            # Aggiorna la caption del menu foto
+            updated_user = db_get(tid)
+            _run_async(_update_menu_caption(tid, updated_user))
         return
 
     # Musica in play
@@ -596,6 +600,9 @@ def _poll_user(user: dict):
             "⛏️ Mine Nackles attivo"
         )
         _run_async(_update_now_playing(tid, now_playing_txt))
+        # Aggiorna anche la caption sotto l'immagine Acki Jewels
+        updated_user = db_get(tid)
+        _run_async(_update_menu_caption(tid, updated_user))
 
 # -------------------------------------------------------
 # DAILY SUMMARY — ogni sera alle DAILY_SUMMARY_HOUR
@@ -711,8 +718,6 @@ def progress_bar(pct: int) -> str:
     filled = pct // 10
     return "🟥" * filled + "⬛" * (10 - filled)
 
-SPOTIFY_OPEN_URL = "https://open.spotify.com"  # fallback web
-SPOTIFY_APP_URL  = "https://open.spotify.com"  # deep link web (spotify:// non supportato da Telegram)
 
 # -------------------------------------------------------
 # TELEGRAM — send helpers
@@ -780,24 +785,51 @@ async def _edit(q, txt: str = "", markup=None):
             log.error(f"Edit markup error: {e}")
 
 async def _send_photo(tid: int, caption: str, markup=None):
-    """Manda il messaggio con l'immagine Acki Jewels come header."""
+    """Manda il messaggio con l'immagine Acki Jewels come header.
+    Salva il message_id come menu_msg_id per aggiornarlo dopo."""
     if not _tg_app:
         return
     try:
         if os.path.exists(ACKI_IMAGE):
             with open(ACKI_IMAGE, "rb") as img:
-                await _tg_app.bot.send_photo(
+                sent = await _tg_app.bot.send_photo(
                     chat_id=tid,
                     photo=img,
                     caption=caption,
                     parse_mode="Markdown",
                     reply_markup=markup
                 )
-        else:
-            await _send(tid, caption, markup)
+                db_set(tid, menu_msg_id=sent.message_id)
+                return
+        await _send(tid, caption, markup)
     except Exception as e:
         log.error(f"Send photo error a {tid}: {e}")
         await _send(tid, caption, markup)
+
+
+async def _update_menu_caption(tid: int, user: dict):
+    """Aggiorna la caption del messaggio foto menu con il brano corrente."""
+    if not _tg_app:
+        return
+    msg_id = (user or {}).get("menu_msg_id", 0) or 0
+    if not msg_id:
+        return
+    mining = bool(user and user.get("mining_active"))
+    txt = (
+        f"{hdr_menu(user)}\n\n"
+        f"{mining_status_line(mining)}\n"
+        f"`▸ scegli un'opzione`"
+    )
+    try:
+        await _tg_app.bot.edit_message_caption(
+            chat_id=tid,
+            message_id=msg_id,
+            caption=txt,
+            parse_mode="Markdown",
+            reply_markup=main_kb(user)
+        )
+    except Exception as e:
+        log.debug(f"Menu caption update skipped: {e}")
 
 # -------------------------------------------------------
 # KEYBOARDS — con gemme e brillanti
@@ -842,7 +874,7 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
         ])
         # Apri Spotify + Disconnetti
         rows.append([
-            InlineKeyboardButton("🎧 Apri Spotify", url=SPOTIFY_APP_URL),
+            InlineKeyboardButton("🎧 Apri Spotify", callback_data="open_spotify"),
             InlineKeyboardButton("🔌 Disconnetti",  callback_data="disconnect"),
         ])
     return InlineKeyboardMarkup(rows)
@@ -891,17 +923,19 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if os.path.exists(ACKI_IMAGE):
         with open(ACKI_IMAGE, "rb") as img:
-            await update.message.reply_photo(
+            sent = await update.message.reply_photo(
                 photo=img,
                 caption=txt,
                 parse_mode="Markdown",
                 reply_markup=main_kb(user)
             )
+            db_set(tid, menu_msg_id=sent.message_id)
     else:
         await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
 
 async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = db_get(update.effective_user.id)
+    tid  = update.effective_user.id
+    user = db_get(tid)
     mining = bool(user and user.get("mining_active"))
     txt = (
         f"{hdr_menu(user)}\n\n"
@@ -910,12 +944,13 @@ async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if os.path.exists(ACKI_IMAGE):
         with open(ACKI_IMAGE, "rb") as img:
-            await update.message.reply_photo(
+            sent = await update.message.reply_photo(
                 photo=img,
                 caption=txt,
                 parse_mode="Markdown",
                 reply_markup=main_kb(user)
             )
+            db_set(tid, menu_msg_id=sent.message_id)
     else:
         await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
 
@@ -1199,7 +1234,28 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "pause":
         await _player_action(q, user, "pause")
     elif data == "next":
+        repeat_mode = (user or {}).get("repeat_mode", "off")
+        if repeat_mode == "track":
+            await q.answer("⚠️ Repeat 1 brano: skip comunque al prossimo", show_alert=False)
         await _player_action(q, user, "next")
+
+    elif data == "open_spotify":
+        # Prova ad aprire l'app Spotify con deep link
+        await _edit(q,
+            f"`{SEP}`\n"
+            "🎧 *APRI SPOTIFY*\n"
+            f"`{SEP}`\n\n"
+            "Premi il link per aprire l'app:\n\n"
+            "👉 [Apri Spotify App](spotify://)\n\n"
+            "_Se non si apre, scarica Spotify_\n"
+            "_dal_ [Play Store](https://play.google.com/store/apps/details?id=com.spotify.music) "
+            "_o_ [App Store](https://apps.apple.com/app/spotify/id324684580)\n"
+            "_e riprova._"
+            f"{firma()}",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Menu", callback_data="back"),
+            ]])
+        )
 
     elif data == "playlists":
         await _edit_playlists(q, user, page=0)
@@ -1466,62 +1522,94 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         await _edit(q, "❌ Non connesso.")
         return
 
-    limit  = 6  # meno brani per pagina = bottoni più leggibili
+    limit  = 6
     offset = page * limit
 
-    # Carica brani e info playlist in un'unica chiamata
-    tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
-                         params={"limit": limit, "offset": offset})
+    # ── Strategia 1: endpoint /playlists/{id} con fields (meno restrittivo)
+    fields = (
+        "name,uri,tracks.total,"
+        "tracks.items(track(name,artists(name),uri,duration_ms,type)),"
+        "tracks.next"
+    )
+    tracks_data = None
+    pl_name     = "Playlist"
+    pl_uri      = ""
+    items       = []
+    total       = 0
 
-    if not tracks_data or tracks_data.get("_err") or tracks_data.get("_204"):
-        err_code = (tracks_data or {}).get("_err", "?")
-        log.error(f"Playlist tracks error: pl_id={pl_id} err={err_code} data={tracks_data}")
-        body_info = str((tracks_data or {}).get("_body", ""))[:120]
-        if str(err_code) == "403":
-            msg = (
-                f"`{SEP}`\n"
-                f"🔒 *Errore 403 — Permessi mancanti*\n"
-                f"`{SEP}`\n\n"
-                "Il token attuale non ha i permessi\n"
-                "per leggere i brani delle playlist.\n\n"
-                "🔴 *Soluzione: premi Riconnetti Spotify*\n"
-                "per ottenere un nuovo token con\n"
-                "tutti i permessi aggiornati.\n\n"
-                f"`{body_info}`"
-            )
-        elif str(err_code) == "401":
-            msg = (
-                f"⚠️ *Token scaduto* (401)\n"
-                "Premi Riconnetti per rinnovarlo."
-            )
+    # Prima prova: playlist object con fields + offset/limit
+    pl_full = sp_get(user, f"/playlists/{pl_id}",
+                     params={"fields": fields,
+                             "offset": offset, "limit": limit})
+
+    if pl_full and not pl_full.get("_err"):
+        pl_name = pl_full.get("name", "Playlist")
+        pl_uri  = pl_full.get("uri", "")
+        tracks_obj = pl_full.get("tracks") or {}
+        total   = tracks_obj.get("total", 0)
+        items   = tracks_obj.get("items", [])
+        log.info(f"Playlist OK via /playlists/{pl_id}: {pl_name}, {total} brani, got {len(items)}")
+    else:
+        # Fallback: endpoint /playlists/{id}/tracks diretto
+        log.info(f"Fallback to /playlists/{pl_id}/tracks (pl_full err={( pl_full or {}).get('_err')})")
+        tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
+                             params={"limit": limit, "offset": offset})
+
+        if tracks_data and not tracks_data.get("_err") and not tracks_data.get("_204"):
+            total = tracks_data.get("total", 0)
+            items = tracks_data.get("items", [])
+            # Prendi nome playlist separatamente
+            pl_info = sp_get(user, f"/playlists/{pl_id}",
+                             params={"fields": "name,uri"})
+            pl_name = (pl_info or {}).get("name", "Playlist")
+            pl_uri  = (pl_info or {}).get("uri", "")
         else:
-            msg = (
-                f"⚠️ Errore Spotify `{err_code}`:\n"
-                f"`{body_info}`\n\n"
-                "Riprova o premi Riconnetti."
+            # Entrambi falliti
+            err_code = (tracks_data or pl_full or {}).get("_err", "?")
+            body_info = str((tracks_data or pl_full or {}).get("_body", ""))[:120]
+            log.error(f"Playlist tracks BOTH failed: pl_id={pl_id} err={err_code}")
+
+            if str(err_code) == "403":
+                msg = (
+                    f"`{SEP}`\n"
+                    f"🔒 *Errore 403 — Accesso negato*\n"
+                    f"`{SEP}`\n\n"
+                    "Spotify blocca l'accesso ai brani.\n\n"
+                    "🔴 *Soluzioni:*\n"
+                    "1️⃣ Vai su [Spotify Dashboard]"
+                    "(https://developer.spotify.com/dashboard)\n"
+                    "2️⃣ Apri la tua app → *Settings*\n"
+                    "3️⃣ In *User Management* aggiungi\n"
+                    "   la tua email Spotify\n"
+                    "4️⃣ Torna qui → *Riconnetti*\n\n"
+                    "⚠️ _In Development Mode solo gli utenti_\n"
+                    "_aggiunti manualmente possono usare_\n"
+                    "_tutte le funzioni API._"
+                )
+            elif str(err_code) == "401":
+                msg = (
+                    f"⚠️ *Token scaduto* (401)\n"
+                    "Premi Riconnetti per rinnovarlo."
+                )
+            else:
+                msg = (
+                    f"⚠️ Errore Spotify `{err_code}`:\n"
+                    f"`{body_info}`\n\n"
+                    "Riprova o premi Riconnetti."
+                )
+            await _edit(q, msg,
+                markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+                ],[
+                    InlineKeyboardButton("🔌 Riconnetti Spotify", callback_data="reconnect"),
+                ],[
+                    InlineKeyboardButton("🏠 Menu", callback_data="back"),
+                ]])
             )
-        await _edit(q, msg,
-            markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
-                InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-            ],[
-                InlineKeyboardButton("🔌 Riconnetti Spotify", callback_data="reconnect"),
-            ],[
-                InlineKeyboardButton("🏠 Menu", callback_data="back"),
-            ]])
-        )
-        return
+            return
 
-    total  = tracks_data.get("total", 0)
-    pages  = max(1, (total + limit - 1) // limit)
-
-    # Prendi nome e uri dalla playlist (senza fields filter per compatibilità)
-    pl_data = sp_get(user, f"/playlists/{pl_id}")
-    pl_name = (pl_data or {}).get("name", "Playlist")
-    pl_uri  = (pl_data or {}).get("uri", "")
-    log.info(f"Playlist info: name={pl_name} uri={pl_uri} err={( pl_data or {}).get('_err')}")
-
-    items = tracks_data.get("items", [])
+    pages = max(1, (total + limit - 1) // limit)
     rows  = []
 
     # Bottone avvia playlist intera
@@ -1565,7 +1653,6 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
         InlineKeyboardButton("🏠 Menu",     callback_data="back"),
     ])
-    # menu_row già incluso sopra
 
     await _edit(q,
         f"{hdr_playlist()}\n\n"
