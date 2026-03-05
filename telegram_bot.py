@@ -160,6 +160,19 @@ def db_init():
             )
         """)
         conn.commit()
+
+        # ── Migrazioni: aggiunge colonne mancanti se non esistono ──
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        migrations = {
+            "now_playing_msg_id": "INTEGER DEFAULT 0",
+            "shuffle_on":         "INTEGER DEFAULT 0",
+            "repeat_mode":        "TEXT DEFAULT 'off'",
+        }
+        for col, typedef in migrations.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {typedef}")
+                log.info(f"Colonna '{col}' aggiunta alla tabella users.")
+        conn.commit()
     log.info("Database inizializzato.")
 
 def db_get(tid: int) -> dict | None:
@@ -428,7 +441,7 @@ def oauth_cb():
         _time.sleep(2)
         mining  = bool((user_inner or {}).get("mining_active"))
         menu_txt = (
-            f"{hdr_menu()}\n\n"
+            f"{hdr_menu(user_inner)}\n\n"
             f"{mining_status_line(mining)}\n"
             f"`▸ scegli un'opzione`"
         )
@@ -654,10 +667,20 @@ def hdr_main() -> str:
         f"`{SEP}`"
     )
 
-def hdr_menu() -> str:
+def hdr_menu(user: dict | None = None) -> str:
+    """Header menu: mostra brano+artista se in riproduzione, altrimenti titolo standard."""
+    last = (user or {}).get("last_track", "") if user else ""
+    if last and " — " in last:
+        artist, track = last.split(" — ", 1)
+        return (
+            f"`{SEP}`\n"
+            f"▶️  *{track}*\n"
+            f"🔴  {artist}\n"
+            f"`{SEP}`"
+        )
     return (
         f"`{SEP}`\n"
-        "  🔥  *ACKI NACKI · MENU*  🔥\n"
+        "  🐝  *LISTEN & MINE*  ⛏️\n"
         f"`{SEP}`"
     )
 
@@ -881,7 +904,7 @@ async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = db_get(update.effective_user.id)
     mining = bool(user and user.get("mining_active"))
     txt = (
-        f"{hdr_menu()}\n\n"
+        f"{hdr_menu(user)}\n\n"
         f"{mining_status_line(mining)}\n"
         f"`▸ scegli un'opzione`"
     )
@@ -938,9 +961,15 @@ async def _send_stats(tid: int, message, edit=False):
     ]])
 
     if edit:
-        await message.edit_text(txt, kb)
+        try:
+            await message.edit_caption(caption=txt, parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            try:
+                await message.edit_text(text=txt, parse_mode="Markdown", reply_markup=kb)
+            except Exception as e:
+                log.error(f"Stats edit error: {e}")
     else:
-        await message.reply_text(txt, kb)
+        await message.reply_text(text=txt, parse_mode="Markdown", reply_markup=kb)
 
 # -------------------------------------------------------
 # Helper: azioni player con controllo device
@@ -1140,7 +1169,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db_set(tid, mining_active=1)
         user_upd = db_get(tid)
         txt_on = (
-            f"{hdr_menu()}\n\n"
+            f"{hdr_menu(user_upd)}\n\n"
             "⛏️ *Mine Nackles ATTIVO!*\n"
             "`▸ scegli un'opzione`"
         )
@@ -1153,7 +1182,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             stats_increment(tid, minutes=mins)
         user_upd = db_get(tid)
         txt_off = (
-            f"{hdr_menu()}\n\n"
+            f"{hdr_menu(user_upd)}\n\n"
             "⚫ *Mine Nackles SOSPESO*\n"
             "`▸ scegli un'opzione`"
         )
@@ -1309,7 +1338,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = db_get(tid)
         mining = bool(user and user.get("mining_active"))
         txt = (
-            f"{hdr_menu()}\n\n"
+            f"{hdr_menu(user)}\n\n"
             f"{mining_status_line(mining)}\n"
             f"`▸ scegli un'opzione`"
         )
