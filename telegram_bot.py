@@ -171,6 +171,9 @@ def db_init():
             "shuffle_on":         "INTEGER DEFAULT 0",
             "repeat_mode":        "TEXT DEFAULT 'off'",
             "menu_msg_id":        "INTEGER DEFAULT 0",
+            "is_premium":         "INTEGER DEFAULT -1",
+            "has_app":            "INTEGER DEFAULT -1",
+            "setup_done":         "INTEGER DEFAULT 0",
         }
         for col, typedef in migrations.items():
             if col not in existing:
@@ -403,12 +406,12 @@ def oauth_cb():
 
     log.info(f"[OAuth] ✅ Token salvato per telegram_id={tid}")
 
-    # Verifica subito se l'account è Premium
+    # Verifica subito se l'account è Premium via API
     user_data   = db_get(tid)
     profile     = None
     premium_ok  = False
     sp_name     = ""
-    product     = "sconosciuto"
+    product     = "unknown"
     if user_data:
         profile = sp_get(user_data, "/me")
         log.info(f"[OAuth] /me response: {profile}")
@@ -416,34 +419,57 @@ def oauth_cb():
             product    = (profile.get("product") or "").lower()
             premium_ok = product == "premium"
             sp_name    = profile.get("display_name") or profile.get("id") or ""
+            # Aggiorna lo status premium nel DB basandosi sull'API reale
+            db_set(tid, is_premium=1 if premium_ok else 0)
             log.info(f"[OAuth] Account: {sp_name} / product='{product}' / premium={premium_ok}")
         else:
             log.error(f"[OAuth] /me failed: {profile}")
 
+    # Prepara il messaggio di conferma in base al tipo di account
+    user_claimed_premium = bool(user_data and user_data.get("is_premium", 0) == 1)
+
     if premium_ok:
         confirm_msg = (
             f"`{SEP}`\n"
-            f"✅ *SPOTIFY PREMIUM CONNESSO!*\n"
+            f"✅ *SPOTIFY PREMIUM CONNECTED!*\n"
             f"`{SEP}`\n\n"
             f"👤 Account: *{sp_name}*\n"
-            f"⭐ Piano: *Premium* ✅\n\n"
-            "`▸ ACKI NACKI è pronto!`\n"
-            "⛏️ Mine Nackles parte automaticamente\n"
-            "non appena ascolti musica 🎵\n\n"
-            "Usa /menu per tutti i controlli"
+            f"⭐ Plan: *Premium* ✅\n\n"
+            "⛏️ Mining starts automatically\n"
+            "when you listen to music 🎵\n"
+            "🎛️ Full player controls enabled!\n\n"
+            "Use /menu for all controls"
         )
-    else:
+    elif user_claimed_premium and not premium_ok:
+        # Aveva detto Premium ma non lo è
         confirm_msg = (
             f"`{SEP}`\n"
-            f"⚠️ *ATTENZIONE — ACCOUNT NON PREMIUM*\n"
+            f"⚠️ *ACCOUNT IS NOT PREMIUM*\n"
             f"`{SEP}`\n\n"
-            f"👤 Account: *{sp_name or 'sconosciuto'}*\n"
-            f"Piano rilevato: *{product}*\n\n"
-            "I comandi play/pause/next richiedono\n"
-            "*Spotify Premium*. Hai connesso l'account\n"
-            "sbagliato? Usa /menu → Riconnetti.\n\n"
-            "⚠️ _Il mining e le playlist funzionano_\n"
-            "_solo con account Premium._"
+            f"👤 Account: *{sp_name or 'unknown'}*\n"
+            f"Detected plan: *{product}*\n\n"
+            "You selected Premium during setup,\n"
+            "but this account is *Free*.\n\n"
+            "⛏️ *Mining will work* — we track\n"
+            "your listening automatically.\n\n"
+            "🔒 Player controls are *disabled*.\n\n"
+            "_Upgrade to Premium or reconnect_\n"
+            "_with a different account._"
+        )
+    else:
+        # Free — mining funziona
+        confirm_msg = (
+            f"`{SEP}`\n"
+            f"✅ *SPOTIFY FREE CONNECTED!*\n"
+            f"`{SEP}`\n\n"
+            f"👤 Account: *{sp_name or 'unknown'}*\n"
+            f"Plan: *{product}* (Free mode)\n\n"
+            "⛏️ *Mining is active!*\n"
+            "Open Spotify and play music —\n"
+            "the bot tracks everything.\n\n"
+            "🔒 Player controls disabled\n"
+            "(Premium required)\n\n"
+            "Use /menu for mining & stats"
         )
 
     threading.Thread(target=_async_notify, args=(tid, confirm_msg), daemon=True).start()
@@ -838,44 +864,57 @@ async def _update_menu_caption(tid: int, user: dict):
 # KEYBOARDS — con gemme e brillanti
 # -------------------------------------------------------
 def main_kb(user: dict | None) -> InlineKeyboardMarkup:
-    authed = bool(user and user.get("access_token"))
-    mining = bool(user and user.get("mining_active"))
-    rows   = []
+    authed  = bool(user and user.get("access_token"))
+    mining  = bool(user and user.get("mining_active"))
+    premium = bool(user and user.get("is_premium", 0) == 1)
+    rows    = []
+
     if not authed:
         rows.append([InlineKeyboardButton("🎵 Connetti Spotify", callback_data="connect")])
     else:
+        # Riga 1: stato, stats, playlist (tutti)
         rows.append([
             InlineKeyboardButton("🔴 Stato",   callback_data="status"),
             InlineKeyboardButton("📊 Stats",   callback_data="stats"),
             InlineKeyboardButton("🎼 Playlist", callback_data="playlists"),
         ])
+        # Riga 2: mining on/off (tutti)
         rows.append([InlineKeyboardButton(
             "⏸ Sospendi Mine Nackles" if mining else "⛏️ Avvia Mine Nackles",
             callback_data="mining_off" if mining else "mining_on"
         )])
-        # Controlli riproduzione — riga grande
-        rows.append([
-            InlineKeyboardButton("⏮",  callback_data="prev"),
-            InlineKeyboardButton("▶",  callback_data="play"),
-            InlineKeyboardButton("⏸",  callback_data="pause"),
-            InlineKeyboardButton("⏭",  callback_data="next"),
-        ])
-        # Shuffle + Repeat — emoji cambiano quando attivi
-        shuffle_on  = bool(user and user.get("shuffle_on"))
-        repeat_mode = (user or {}).get("repeat_mode", "off")
-        rows.append([
-            InlineKeyboardButton(
-                "🔀 ● Shuffle ON" if shuffle_on else "🔀 Shuffle",
-                callback_data="shuffle_toggle"
-            ),
-            InlineKeyboardButton(
-                "🔂 ● 1 brano"   if repeat_mode == "track"   else
-                "🔁 ● Playlist"  if repeat_mode == "context" else
-                "🔁 Repeat",
-                callback_data="repeat_toggle"
-            ),
-        ])
-        # Apri Spotify + Disconnetti
+
+        if premium:
+            # Controlli riproduzione — solo Premium
+            rows.append([
+                InlineKeyboardButton("⏮",  callback_data="prev"),
+                InlineKeyboardButton("▶",  callback_data="play"),
+                InlineKeyboardButton("⏸",  callback_data="pause"),
+                InlineKeyboardButton("⏭",  callback_data="next"),
+            ])
+            # Shuffle + Repeat — solo Premium
+            shuffle_on  = bool(user and user.get("shuffle_on"))
+            repeat_mode = (user or {}).get("repeat_mode", "off")
+            rows.append([
+                InlineKeyboardButton(
+                    "🔀 ● Shuffle ON" if shuffle_on else "🔀 Shuffle",
+                    callback_data="shuffle_toggle"
+                ),
+                InlineKeyboardButton(
+                    "🔂 ● 1 brano"   if repeat_mode == "track"   else
+                    "🔁 ● Playlist"  if repeat_mode == "context" else
+                    "🔁 Repeat",
+                    callback_data="repeat_toggle"
+                ),
+            ])
+        else:
+            # Free user: messaggio inline invece dei controlli
+            rows.append([InlineKeyboardButton(
+                "🔒 Player controls — Premium only",
+                callback_data="premium_needed"
+            )])
+
+        # Apri Spotify + Disconnetti (tutti)
         # Universal link: apre l'app su mobile se installata, altrimenti web
         rows.append([
             InlineKeyboardButton("🎧 Apri Spotify", url="https://open.spotify.com"),
@@ -886,6 +925,82 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
 # -------------------------------------------------------
 # HANDLERS
 # -------------------------------------------------------
+
+# ── Onboarding text and keyboards ──
+def _onboard_welcome_txt(name: str) -> str:
+    return (
+        f"`{SEP}`\n"
+        "    🐝  *A C K I   N A C K I*\n"
+        "    ⛏️  *L I S T E N  &  M I N E*\n"
+        f"`{SEP}`\n\n"
+        f"👋 Hey *{name}*! Welcome!\n\n"
+        "`▸ BEFORE WE START`\n"
+        "I need to know a couple of things\n"
+        "to set everything up correctly.\n\n"
+        "🎧 *Do you have Spotify Premium?*"
+        f"{firma()}"
+    )
+
+def _onboard_premium_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, I have Premium", callback_data="setup_premium_yes")],
+        [InlineKeyboardButton("❌ No, I have Free", callback_data="setup_premium_no")],
+    ])
+
+def _onboard_app_txt() -> str:
+    return (
+        f"`{SEP}`\n"
+        "    🐝  *SETUP — STEP 2/2*\n"
+        f"`{SEP}`\n\n"
+        "📱 *Do you have the Spotify app*\n"
+        "*installed on your phone?*\n\n"
+        "_The app is needed so you can_\n"
+        "_control playback from Telegram._"
+        f"{firma()}"
+    )
+
+def _onboard_app_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, it's installed", callback_data="setup_app_yes")],
+        [InlineKeyboardButton("❌ No, I don't have it", callback_data="setup_app_no")],
+    ])
+
+def _onboard_install_txt() -> str:
+    return (
+        f"`{SEP}`\n"
+        "    📲  *INSTALL SPOTIFY FIRST*\n"
+        f"`{SEP}`\n\n"
+        "You need the Spotify app to use\n"
+        "Listen & Mine.\n\n"
+        "📥 Download it here:\n"
+        "▸ [Google Play Store](https://play.google.com/store/apps/details?id=com.spotify.music)\n"
+        "▸ [Apple App Store](https://apps.apple.com/app/spotify/id324684580)\n\n"
+        "Once installed, open it, log in,\n"
+        "then come back and press /start"
+        f"{firma()}"
+    )
+
+def _onboard_no_premium_txt() -> str:
+    """Messaggio per utenti Free — mining funziona, controlli no."""
+    return (
+        f"`{SEP}`\n"
+        "    ⚠️  *SPOTIFY FREE — LIMITED MODE*\n"
+        f"`{SEP}`\n\n"
+        "⛏️ *Mining works* with Free!\n"
+        "The bot will track what you listen to\n"
+        "and count your Nackles.\n\n"
+        "❌ *What won't work:*\n"
+        "Play/Pause/Next/Prev controls\n"
+        "(these require Premium)\n\n"
+        "✅ *What works:*\n"
+        "Mining, Stats, Playlist view\n\n"
+        "_Upgrade to Premium anytime and_\n"
+        "_press Reconnect to unlock all controls._\n\n"
+        "🎵 Ready to connect Spotify?"
+        f"{firma()}"
+    )
+
+
 async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid   = update.effective_user.id
     name  = update.effective_user.first_name or "utente"
@@ -894,7 +1009,9 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
            first_name = name)
     user   = db_get(tid)
     authed = bool(user and user.get("access_token"))
+    setup  = bool(user and user.get("setup_done"))
 
+    # ── Se già connesso: mostra menu normale ──
     if authed:
         user   = _sync_player_state(user)
         total  = stats_get_total(tid)
@@ -913,30 +1030,28 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"{mining_status_line(mining)}"
             f"{firma()}"
         )
-    else:
-        txt = (
-            f"{hdr_main()}\n\n"
-            f"👋 Ciao *{name}*! Benvenuto!\n\n"
-            f"`▸ COME FUNZIONA`\n"
-            f"1️⃣  Connetti Spotify\n"
-            f"2️⃣  Ascolta musica normalmente\n"
-            f"3️⃣  ⛏️ Mine Nackles parte in automatico\n"
-            f"4️⃣  Controlla stats con /stats\n\n"
-            f"🔴 _Premi il bottone qui sotto_"
-            f"{firma()}"
-        )
+        if os.path.exists(ACKI_IMAGE):
+            with open(ACKI_IMAGE, "rb") as img:
+                sent = await update.message.reply_photo(
+                    photo=img, caption=txt,
+                    parse_mode="Markdown", reply_markup=main_kb(user)
+                )
+                db_set(tid, menu_msg_id=sent.message_id)
+        else:
+            await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
+        return
 
+    # ── Onboarding: step 1 — chiedi Premium ──
+    txt = _onboard_welcome_txt(name)
     if os.path.exists(ACKI_IMAGE):
         with open(ACKI_IMAGE, "rb") as img:
             sent = await update.message.reply_photo(
-                photo=img,
-                caption=txt,
-                parse_mode="Markdown",
-                reply_markup=main_kb(user)
+                photo=img, caption=txt,
+                parse_mode="Markdown", reply_markup=_onboard_premium_kb()
             )
             db_set(tid, menu_msg_id=sent.message_id)
     else:
-        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
+        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=_onboard_premium_kb())
 
 async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid  = update.effective_user.id
@@ -1202,17 +1317,92 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Handler che gestiscono q.answer() internamente (toast personalizzati)
     if data == "shuffle_toggle":
+        if not (user and user.get("is_premium", 0) == 1):
+            await q.answer("🔒 Spotify Premium required for this.", show_alert=True)
+            return
         await _toggle_shuffle(q, user)
         return
     if data == "repeat_toggle":
+        if not (user and user.get("is_premium", 0) == 1):
+            await q.answer("🔒 Spotify Premium required for this.", show_alert=True)
+            return
         await _toggle_repeat(q, user)
         return
     if data in ("play", "pause", "next", "prev"):
+        if not (user and user.get("is_premium", 0) == 1):
+            await q.answer("🔒 Spotify Premium required for player controls.", show_alert=True)
+            return
         await _player_action(q, user, data)
         return
 
     # Tutti gli altri: answer vuoto subito
     await q.answer()
+
+    # ── ONBOARDING — setup flow ──
+    if data == "setup_premium_yes":
+        db_set(tid, is_premium=1)
+        await _edit(q, _onboard_app_txt(), markup=_onboard_app_kb())
+        return
+
+    elif data == "setup_premium_no":
+        db_set(tid, is_premium=0)
+        await _edit(q, _onboard_app_txt(), markup=_onboard_app_kb())
+        return
+
+    elif data == "setup_app_yes":
+        db_set(tid, has_app=1, setup_done=1)
+        user = db_get(tid)
+        premium = bool(user and user.get("is_premium", 0) == 1)
+        if premium:
+            txt = (
+                f"`{SEP}`\n"
+                "    ✅  *SETUP COMPLETE!*\n"
+                f"`{SEP}`\n\n"
+                "🎧 *Premium* + 📱 *App installed*\n"
+                "You're all set for the full experience!\n\n"
+                "⛏️ Mining + 🎛️ Player controls\n"
+                "📊 Stats + 🎼 Playlist management\n\n"
+                "🔴 *Now connect your Spotify account:*"
+                f"{firma()}"
+            )
+        else:
+            txt = _onboard_no_premium_txt()
+        await _edit(q, txt,
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎵 Connect Spotify", callback_data="connect")
+            ]])
+        )
+        return
+
+    elif data == "setup_app_no":
+        db_set(tid, has_app=0)
+        await _edit(q, _onboard_install_txt(),
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Done, I installed it!", callback_data="setup_app_yes"),
+            ]])
+        )
+        return
+
+    elif data == "premium_needed":
+        await _edit(q,
+            f"`{SEP}`\n"
+            "🔒 *PREMIUM REQUIRED*\n"
+            f"`{SEP}`\n\n"
+            "Player controls (play, pause, next,\n"
+            "prev, shuffle, repeat) require\n"
+            "*Spotify Premium*.\n\n"
+            "⛏️ *Mining works normally* with Free!\n"
+            "Just open Spotify, play music, and\n"
+            "the bot tracks everything.\n\n"
+            "_Upgrade to Premium anytime, then_\n"
+            "_press Reconnect to unlock controls._"
+            f"{firma()}",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔌 Reconnect (after upgrade)", callback_data="reconnect"),
+                InlineKeyboardButton("🏠 Menu", callback_data="back"),
+            ]])
+        )
+        return
 
     # --- Connetti Spotify ---
     if data == "connect":
@@ -1222,30 +1412,47 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "response_type": "code", "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI, "scope": SCOPE,
             "state": state,
-            "show_dialog": "true",   # forza consenso → scope sempre aggiornati
+            "show_dialog": "true",
         }
         url = SPOTIFY_AUTH_URL + "?" + urllib.parse.urlencode(params)
-        txt = (
-            f"`{SEP}`\n"
-            "🔐 *CONNETTI SPOTIFY PREMIUM*\n"
-            f"`{SEP}`\n\n"
-            "`▸ IMPORTANTE — leggi prima`\n"
-            "🔴 Apri *l'app Spotify* sul telefono\n"
-            "🔴 Assicurati di essere loggato con\n"
-            "   il tuo account *Premium*\n\n"
-            "`▸ POI SEGUI QUESTI PASSI`\n"
-            "1️⃣  Premi il link qui sotto\n"
-            "2️⃣  Se Spotify chiede il login →\n"
-            "   usa l'email del tuo *Premium*\n"
-            "3️⃣  Premi *Accetta*\n"
-            "4️⃣  Torna qui e premi il bottone\n\n"
-            f"👉 [🎧 Autorizza Spotify Premium]({url})\n\n"
-            "⚠️ _Se vedi pagina upgrade: premi Indietro,_\n"
-            "_apri Spotify, fai logout e riloggati con Premium_"
-            f"{firma()}"
-        )
+
+        premium = bool(user and user.get("is_premium", 0) == 1)
+        if premium:
+            txt = (
+                f"`{SEP}`\n"
+                "🔐 *CONNECT SPOTIFY PREMIUM*\n"
+                f"`{SEP}`\n\n"
+                "`▸ FOLLOW THESE STEPS`\n"
+                "1️⃣  Open the *Spotify app* on your phone\n"
+                "2️⃣  Make sure you're logged in with\n"
+                "   your *Premium* account\n"
+                "3️⃣  Press the link below\n"
+                "4️⃣  Press *Accept* on the Spotify page\n"
+                "5️⃣  Come back here and press the button\n\n"
+                f"👉 [🎧 Authorize Spotify]({url})\n\n"
+                "⚠️ _If you see an upgrade page: go back,_\n"
+                "_open Spotify, log out and re-login_\n"
+                "_with your Premium account._"
+                f"{firma()}"
+            )
+        else:
+            txt = (
+                f"`{SEP}`\n"
+                "🔐 *CONNECT SPOTIFY FREE*\n"
+                f"`{SEP}`\n\n"
+                "⛏️ Mining mode — limited controls\n\n"
+                "`▸ FOLLOW THESE STEPS`\n"
+                "1️⃣  Open the *Spotify app* on your phone\n"
+                "2️⃣  Press the link below\n"
+                "3️⃣  Press *Accept* on the Spotify page\n"
+                "4️⃣  Come back here and press the button\n\n"
+                f"👉 [🎧 Authorize Spotify]({url})\n\n"
+                "_Player controls won't be available._\n"
+                "_Mining will track your listening!_"
+                f"{firma()}"
+            )
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("💎 Ho autorizzato, controlla!", callback_data="check_auth")
+            InlineKeyboardButton("💎 Done, check!", callback_data="check_auth")
         ]])
         try:
             await _edit(q, txt, kb)
@@ -1255,10 +1462,12 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "check_auth":
         user = db_get(tid)
         if user and user.get("access_token"):
-            await _edit(q, 
-                "✅ *Connesso!*\nMining automatico attivo 🚀\n\nUsa /stats per le statistiche.",
-                markup=main_kb(user)
-            )
+            premium = bool(user.get("is_premium", 0) == 1)
+            if premium:
+                msg = "✅ *Connected!*\nMining + full controls active 🚀\n\nUse /menu for all controls."
+            else:
+                msg = "✅ *Connected!*\n⛏️ Mining active 🚀\n\n🔒 Player controls disabled (Free)\n\nUse /menu for mining & stats."
+            await _edit(q, msg, markup=main_kb(user))
         else:
             await _edit(q, 
                 "⏳ Non ho ancora ricevuto l'autorizzazione.\n"
@@ -1412,7 +1621,6 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db_set(tid, access_token=None, refresh_token=None,
                mining_active=0, last_track="", shuffle_on=0, repeat_mode="off",
                now_playing_msg_id=0)
-        # Rimanda all'handler connect riusando lo stesso codice
         import secrets as _sec, urllib.parse as _urlp
         state           = _sec.token_urlsafe(16)
         _pending[state] = tid
@@ -1420,20 +1628,21 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "response_type": "code", "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI, "scope": SCOPE,
             "state": state,
-            "show_dialog": "true",   # forza consenso → scope sempre aggiornati
+            "show_dialog": "true",
         }
         url = SPOTIFY_AUTH_URL + "?" + _urlp.urlencode(params)
         txt = (
             f"`{SEP}`\n"
-            "🔐 *RICONNETTI SPOTIFY PREMIUM*\n"
+            "🔐 *RECONNECT SPOTIFY*\n"
             f"`{SEP}`\n\n"
-            "Token aggiornato — autorizza di nuovo:\n\n"
-            f"👉 [🎧 Autorizza Spotify Premium]({url})\n\n"
-            "⚠️ _Assicurati di usare l'account Premium_"
+            "Authorize again with the link below.\n"
+            "Your Premium status will be verified.\n\n"
+            f"👉 [🎧 Authorize Spotify]({url})\n\n"
+            "⚠️ _Make sure you use the right account._"
             f"{firma()}"
         )
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("💎 Ho autorizzato!", callback_data="check_auth")
+            InlineKeyboardButton("💎 Done, check!", callback_data="check_auth")
         ]])
         await _edit(q, txt, markup=kb)
 
