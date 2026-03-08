@@ -1,15 +1,15 @@
 """
-telegram_bot.py v3.3 — Bot Telegram "Listen & Mine"
+telegram_bot.py v3.4 — Bot Telegram "Listen & Mine"
 ----------------------------------------------------
 Avvio:  python telegram_bot.py
 Dipendenze: pip install python-telegram-bot flask requests
 
-Novità v3.3:
-- FIX MINING FREE: Mining funziona anche per utenti Free usando endpoint alternativi
-- FIX STATO: Visualizzazione corretta dello stato di riproduzione per Free
-- DOPPIO ENDPOINT: Prova /me/player/currently-playing, fallback su /me/player/recently-played
-- CACHE TRACCIA: Mantiene ultima traccia anche se API non risponde
-- FIX F-STRING: Corretti tutti gli errori di sintassi nelle f-string
+Novità v3.4:
+- FIX 403 "NOT REGISTERED": detecta l'errore Spotify Dev Mode e mostra istruzioni chiare
+- Mining monitor: ferma il polling per utenti non registrati (evita spam log)
+- Notifica ONE-TIME: invia messaggio con istruzioni solo 1 volta per utente
+- Playlist: usa tracks embedded dal playlist object (bypassa /tracks 403)
+- OAuth callback: detecta 403 subito dopo connessione e avvisa
 """
 
 import asyncio
@@ -314,7 +314,6 @@ def sp_get(user: dict, path: str, params: dict = None) -> dict | None:
         if r.status_code >= 400:
             try:
                 body = r.json()
-                # Se è 401, prova a fare refresh e riprova una volta
                 if r.status_code == 401:
                     log.info("Token 401, provo refresh e riprovo")
                     if do_refresh(user):
@@ -322,8 +321,13 @@ def sp_get(user: dict, path: str, params: dict = None) -> dict | None:
                         return sp_get(user, path, params)
             except Exception:
                 body = r.text
-            log.error(f"sp_get {path} → {r.status_code}: {body}")
-            return {"_err": r.status_code, "_body": body}
+            # Detect "not registered" 403
+            not_reg = _is_not_registered_error(r.status_code, body)
+            if not_reg:
+                log.error(f"sp_get {path} → 403 NOT REGISTERED (user {user.get('telegram_id')})")
+            else:
+                log.error(f"sp_get {path} → {r.status_code}: {body}")
+            return {"_err": r.status_code, "_body": body, "_not_registered": not_reg}
         try:
             return r.json()
         except Exception:
@@ -331,6 +335,18 @@ def sp_get(user: dict, path: str, params: dict = None) -> dict | None:
     except Exception as e:
         log.error(f"sp_get {path} exception: {e}")
         return {"_err": 500, "_body": str(e)}
+
+
+def _is_not_registered_error(status_code: int, body) -> bool:
+    """Detecta l'errore 403 'user not registered for this application'."""
+    if status_code != 403:
+        return False
+    body_str = str(body).lower()
+    return "not registered" in body_str or "not registered for this app" in body_str
+
+
+# Set per evitare spam: utenti già notificati per errore 403
+_notified_403: set = set()
 
 def sp_put(user: dict, path: str, params: dict = None, body=None) -> dict | None:
     tok = valid_token(user)
@@ -656,28 +672,62 @@ def oauth_cb():
     premium_ok  = False
     sp_name     = ""
     product     = "unknown"
+    not_registered = False
     if user_data:
         profile = sp_get(user_data, "/me")
         log.info(f"[OAuth] /me response: {profile}")
-        if profile and not profile.get("_err"):
+        if profile and profile.get("_not_registered"):
+            not_registered = True
+            log.error(f"[OAuth] USER NOT REGISTERED in Spotify app!")
+        elif profile and not profile.get("_err"):
             product    = (profile.get("product") or "").lower()
             premium_ok = product == "premium"
             sp_name    = profile.get("display_name") or profile.get("id") or ""
-            # Aggiorna lo status premium nel DB basandosi sull'API reale
             db_set(tid, is_premium=1 if premium_ok else 0)
             log.info(f"[OAuth] Account: {sp_name} / product='{product}' / premium={premium_ok}")
         else:
             log.error(f"[OAuth] /me failed: {profile}")
 
-    # Prepara il messaggio di conferma in base al tipo di account
-    user_claimed_premium = bool(user_data and user_data.get("is_premium", 0) == 1)
-
-    # Lingua utente dal parametro state (formato: tid_lang)
+    # Lingua utente dal parametro state
     raw_state = request.args.get("state", "")
     _lang_from_state = "it"
     if "_" in raw_state:
         _lang_from_state = raw_state.split("_", 1)[-1]
     lang_cb = _lang(_lang_from_state)
+
+    # ── 403 NOT REGISTERED: messaggio speciale ──
+    if not_registered:
+        # Usa i dati del setup (is_premium dichiarato dall'utente)
+        user_claimed = bool(user_data and user_data.get("is_premium", 0) == 1)
+        confirm_msg = (
+            f"`{SEP}`\n"
+            "🔒 *SPOTIFY API — USER NOT REGISTERED*\n"
+            f"`{SEP}`\n\n"
+            "✅ Token saved, BUT Spotify blocks\n"
+            "API access for your account.\n\n"
+            "`▸ THE ADMIN MUST:`\n"
+            "1️⃣ Go to developer.spotify.com/dashboard\n"
+            "2️⃣ Open the app → *Settings*\n"
+            "3️⃣ In *User Management* add your\n"
+            "   Spotify email address\n"
+            "4️⃣ Come back here → press *Reconnect*\n\n"
+            "⚠️ _Without this step, ALL features_\n"
+            "_are blocked (mining, playlists, stats)._\n"
+            "_Max 25 users in Development Mode._"
+            f"{firma()}"
+        )
+        threading.Thread(target=_async_notify, args=(tid, confirm_msg), daemon=True).start()
+        # NON mandare il menu — l'utente non può fare nulla finché non è registrato
+        return """<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Acki Nacki</title><style>body{background:#0e0b08;color:#e8a87c;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{background:#1a0d08;border:1px solid #c0392b55;border-radius:20px;padding:40px 30px;max-width:400px;width:90%;text-align:center}
+h2{color:#e8a87c;margin-bottom:10px}p{color:#7a5a3a;line-height:1.6;margin-bottom:20px}
+.btn{display:inline-block;background:linear-gradient(135deg,#c0392b,#922b21);color:white;text-decoration:none;padding:14px 30px;border-radius:50px;font-weight:700}</style></head>
+<body><div class="card"><h2>⚠️ USER NOT REGISTERED</h2><p>Your Spotify account needs to be added to the app's User Management.<br>Ask the admin to add your email.</p>
+<a href="tg://resolve?domain=SpoteeBeeBot" class="btn">📱 Back to Telegram</a></div></body></html>"""
+
+    # Prepara il messaggio di conferma in base al tipo di account
+    user_claimed_premium = bool(user_data and user_data.get("is_premium", 0) == 1)
 
     if premium_ok:
         confirm_msg = (
@@ -868,34 +918,92 @@ def mining_monitor():
 
 def _poll_user(user: dict):
     tid  = user["telegram_id"]
+    
+    # ── Check: utente registrato nell'app Spotify? ──
+    # Se 403 "not registered" su qualsiasi endpoint, ferma il mining
+    # e notifica l'utente UNA SOLA VOLTA
+    test_data = sp_get(user, "/me/player/currently-playing",
+                       params={"additional_types": "track,episode"})
+    
+    if test_data and test_data.get("_not_registered"):
+        # Utente NON registrato nell'app Spotify Developer
+        db_set(tid, mining_active=0)
+        
+        if tid not in _notified_403:
+            _notified_403.add(tid)
+            _ul = _user_lang.get(tid, "it")
+            msg = (
+                f"`{SEP}`\n"
+                "🔒 *SPOTIFY API — ACCESS DENIED*\n"
+                f"`{SEP}`\n\n"
+                "❌ Error 403: your Spotify account\n"
+                "is *not registered* in the bot's app.\n\n"
+                "`▸ HOW TO FIX (admin must do this):`\n"
+                "1️⃣ Go to developer.spotify.com/dashboard\n"
+                "2️⃣ Open the app → *Settings*\n"
+                "3️⃣ Scroll to *User Management*\n"
+                "4️⃣ Add your Spotify email\n"
+                "5️⃣ Come back → /start → Reconnect\n\n"
+                "⚠️ _In Development Mode, each user_\n"
+                "_must be added manually (max 25)._\n"
+                "_For more users, submit the app for_\n"
+                "_Extended Quota Mode on Spotify._"
+                f"{firma()}"
+            )
+            _run_async(_send(tid, msg))
+            log.warning(f"[403] User {tid} not registered — mining stopped, notification sent")
+        return
+    
+    # Se il test è andato a buon fine, continua con i dati ottenuti
+    data = test_data
     is_premium = check_premium_status(user)
     
-    # Per utenti Premium: usa endpoint standard
-    if is_premium:
-        data = sp_get(user, "/me/player/currently-playing",
-                     params={"additional_types": "track,episode"})
+    # ── LOGICA UNIFICATA: /me/player/currently-playing funziona per TUTTI ──
+    # La differenza Free/Premium è solo nei CONTROLLI (play/pause/next), non nel monitoring
+    
+    if data is None:
+        db_set(tid, mining_active=0)
+        _ul = _user_lang.get(tid, "it")
+        _run_async(_send(tid, t("token_expired", _ul)))
+        return
+    
+    # Se currently-playing ha dati validi, usali (sia Free che Premium)
+    if data and not data.get("_204") and not data.get("_err") and data.get("is_playing"):
+        item = data.get("item") or {}
+        track_name = item.get("name", "")
+        artists = item.get("artists", [])
+        artist_name = ", ".join([a.get("name", "") for a in artists])
+        track_id = item.get("id", "")
+        track_label = f"{artist_name} — {track_name}" if track_name else "brano sconosciuto"
         
-        if data is None:
-            db_set(tid, mining_active=0)
-            _ul = _user_lang.get(tid, "it")
-            _run_async(_send(tid, t("token_expired", _ul)))
-            return
-        
-        is_playing = False
-        track_name = ""
-        artist_name = ""
-        track_id = ""
-        
-        if data and not data.get("_204") and data.get("is_playing"):
-            is_playing = True
-            item = data.get("item") or {}
+        if track_label != user.get("last_track", ""):
+            db_set(tid, last_track=track_label, last_track_id=track_id, last_track_time=now_ts())
+            stats_increment(tid, sessions=1, tracks=1)
+            _session_start[tid] = now_ts()
+            
+            updated_user = db_get(tid)
+            now_playing_txt = (
+                f"▶️  *{track_name}*\n"
+                f"    {artist_name}\n"
+                "`· · · · · · · · ·`\n"
+                + mining_line_from_user(updated_user)
+            )
+            _run_async(_update_now_playing(tid, now_playing_txt))
+            _run_async(_update_menu_caption(tid, updated_user))
+        return
+    
+    # Se currently-playing è 204/vuoto → niente in play
+    # Per Free: prova recently-played come fallback (rileva ultimo brano)
+    if not is_premium:
+        free_data = get_current_track_free(user)
+        if free_data:
+            item = free_data.get("item", {})
             track_name = item.get("name", "")
             artists = item.get("artists", [])
             artist_name = ", ".join([a.get("name", "") for a in artists])
             track_id = item.get("id", "")
             track_label = f"{artist_name} — {track_name}" if track_name else "brano sconosciuto"
             
-            # Aggiorna mining se c'è un nuovo brano
             if track_label != user.get("last_track", ""):
                 db_set(tid, last_track=track_label, last_track_id=track_id, last_track_time=now_ts())
                 stats_increment(tid, sessions=1, tracks=1)
@@ -903,111 +1011,35 @@ def _poll_user(user: dict):
                 
                 updated_user = db_get(tid)
                 now_playing_txt = (
-                    f"▶️  *{track_name}*\n"
+                    f"⏸️  *{track_name}*\n"
                     f"    {artist_name}\n"
+                    f"    `LAST PLAYED`\n"
                     "`· · · · · · · · ·`\n"
                     + mining_line_from_user(updated_user)
                 )
                 _run_async(_update_now_playing(tid, now_playing_txt))
                 _run_async(_update_menu_caption(tid, updated_user))
-        else:
-            # Nessuna musica in riproduzione
-            if user.get("last_track"):
-                db_set(tid, last_track="")
-                if tid in _session_start:
-                    mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
-                    stats_increment(tid, minutes=mins)
-                updated_user = db_get(tid)
-                stopped_txt = (
-                    "⏹️  *Nessuna riproduzione*\n"
-                    "`· · · · · · · · ·`\n"
-                    + mining_line_from_user(updated_user)
-                )
-                _run_async(_update_now_playing(tid, stopped_txt))
-                _run_async(_update_menu_caption(tid, updated_user))
-    
-    # Per utenti Free: usa endpoint alternativo (recently-played)
-    else:
-        free_data = get_current_track_free(user)
-        
-        if not free_data:
-            # Nessun dato disponibile
-            if user.get("last_track"):
-                # Mantieni l'ultima traccia per un po' (timeout 2 minuti)
-                last_time = user.get("last_track_time", 0)
-                if now_ts() - last_time > 120:  # 2 minuti
-                    db_set(tid, last_track="")
-                    if tid in _session_start:
-                        mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
-                        stats_increment(tid, minutes=mins)
-                    updated_user = db_get(tid)
-                    stopped_txt = (
-                        "⏹️  *Nessuna riproduzione recente*\n"
-                        "`· · · · · · · · ·`\n"
-                        + mining_line_from_user(updated_user)
-                    )
-                    _run_async(_update_now_playing(tid, stopped_txt))
-                    _run_async(_update_menu_caption(tid, updated_user))
             return
+    
+    # Nessuna musica in riproduzione
+    if user.get("last_track"):
+        # Timeout: dopo 2 minuti senza play, resetta
+        last_time = user.get("last_track_time", 0) or 0
+        if not is_premium and (now_ts() - last_time) < 120:
+            return  # Free: aspetta 2 min prima di resettare
         
-        item = free_data.get("item", {})
-        track_name = item.get("name", "")
-        artists = item.get("artists", [])
-        artist_name = ", ".join([a.get("name", "") for a in artists])
-        track_id = item.get("id", "")
-        track_label = f"{artist_name} — {track_name}" if track_name else "brano sconosciuto"
-        is_playing = free_data.get("is_playing", False)
-        
-        # Per Free, consideriamo "in riproduzione" se c'è un dispositivo attivo
-        # e l'ultima traccia è recente (meno di 30 secondi fa)
-        played_at = free_data.get("played_at", "")
-        is_recent = True
-        if played_at:
-            try:
-                played_time = datetime.fromisoformat(played_at.replace('Z', '+00:00'))
-                if (datetime.now() - played_time).total_seconds() < 30:
-                    is_recent = True
-                else:
-                    is_recent = False
-            except:
-                is_recent = False
-        
-        # Aggiorna mining se c'è un nuovo brano
-        if track_label != user.get("last_track", ""):
-            # Nuova traccia rilevata
-            db_set(tid, last_track=track_label, last_track_id=track_id, last_track_time=now_ts())
-            stats_increment(tid, sessions=1, tracks=1)
-            _session_start[tid] = now_ts()
-            
-            updated_user = db_get(tid)
-            playing_indicator = "▶️" if is_playing and is_recent else "⏸️"
-            status_text = "IN ASCOLTO" if is_playing and is_recent else "ULTIMA TRACCIA"
-            now_playing_txt = (
-                f"{playing_indicator}  *{track_name}*\n"
-                f"    {artist_name}\n"
-                f"    `{status_text}`\n"
-                "`· · · · · · · · ·`\n"
-                + mining_line_from_user(updated_user)
-            )
-            _run_async(_update_now_playing(tid, now_playing_txt))
-            _run_async(_update_menu_caption(tid, updated_user))
-        
-        # Se non c'è attività per 2 minuti, resetta
-        elif user.get("last_track") and not (is_playing and is_recent):
-            last_time = user.get("last_track_time", 0)
-            if now_ts() - last_time > 120:  # 2 minuti
-                db_set(tid, last_track="")
-                if tid in _session_start:
-                    mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
-                    stats_increment(tid, minutes=mins)
-                updated_user = db_get(tid)
-                stopped_txt = (
-                    "⏹️  *Nessuna attività recente*\n"
-                    "`· · · · · · · · ·`\n"
-                    + mining_line_from_user(updated_user)
-                )
-                _run_async(_update_now_playing(tid, stopped_txt))
-                _run_async(_update_menu_caption(tid, updated_user))
+        db_set(tid, last_track="")
+        if tid in _session_start:
+            mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
+            stats_increment(tid, minutes=mins)
+        updated_user = db_get(tid)
+        stopped_txt = (
+            "⏹️  *Nessuna riproduzione*\n"
+            "`· · · · · · · · ·`\n"
+            + mining_line_from_user(updated_user)
+        )
+        _run_async(_update_now_playing(tid, stopped_txt))
+        _run_async(_update_menu_caption(tid, updated_user))
 
 # -------------------------------------------------------
 # DAILY SUMMARY — ogni sera alle DAILY_SUMMARY_HOUR
@@ -2524,19 +2556,37 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         err_code = (pl_data or {}).get("_err", "?")
         error_msg = str((pl_data or {}).get("_body", ""))[:120]
         
-        if str(err_code) == "403":
+        if (pl_data or {}).get("_not_registered"):
+            # User not registered in Spotify Developer app
             await _edit(q,
-                f"{SEP}\n"
-                "🔒 *Permessi playlist insufficienti*\n"
-                f"{SEP}\n\n"
-                "Il token Spotify non ha i permessi per leggere questa playlist.\n\n"
-                "🔑 *Soluzione:*\n"
-                "1. Premi il bottone *Riconnetti Spotify*\n"
-                "2. Assicurati di accettare TUTTI i permessi richiesti\n"
-                "3. Riprova dopo la riconnessione\n\n"
-                f"_Errore: {error_msg}_",
+                f"`{SEP}`\n"
+                "🔒 *USER NOT REGISTERED*\n"
+                f"`{SEP}`\n\n"
+                "Your Spotify account is not registered\n"
+                "in the bot's Spotify Developer app.\n\n"
+                "`▸ THE ADMIN MUST:`\n"
+                "1️⃣ Go to developer.spotify.com/dashboard\n"
+                "2️⃣ Open the app → *Settings*\n"
+                "3️⃣ In *User Management* add\n"
+                "   your Spotify email\n"
+                "4️⃣ Then press *Reconnect*\n\n"
+                "⚠️ _ALL features are blocked until_\n"
+                "_your email is added._",
                 markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔄 Riconnetti Spotify", callback_data="reconnect"),
+                    InlineKeyboardButton("🔌 Reconnect", callback_data="reconnect"),
+                ],[
+                    InlineKeyboardButton("🏠 Menu", callback_data="back"),
+                ]])
+            )
+        elif str(err_code) == "403":
+            await _edit(q,
+                f"`{SEP}`\n"
+                "🔒 *Playlist access denied*\n"
+                f"`{SEP}`\n\n"
+                "Try reconnecting to refresh permissions.\n\n"
+                f"_Error: {error_msg}_",
+                markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Reconnect", callback_data="reconnect"),
                 ],[
                     InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
                     InlineKeyboardButton("🏠 Menu", callback_data="back"),
@@ -2554,51 +2604,59 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
 
     pl_name = pl_data.get("name", "Playlist")
     pl_uri = pl_data.get("uri", "")
-    total_tracks = (pl_data.get("tracks") or {}).get("total", 0)
-    pages = max(1, (total_tracks + limit - 1) // limit)
+    tracks_obj = pl_data.get("tracks") or {}
+    all_items = tracks_obj.get("items", [])
+    total_tracks = tracks_obj.get("total", len(all_items))
+    pages = max(1, (min(total_tracks, len(all_items)) + limit - 1) // limit)
 
-    # Ottieni i brani della playlist - usa l'endpoint corretto con market
-    tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks", 
-                        params={
-                            "limit": limit, 
-                            "offset": offset,
-                            "market": "from_token",
-                            "fields": "items(track(name,uri,artists,duration_ms)),total"
-                        })
+    log.info(f"Playlist OK: {pl_name}, total={total_tracks}, embedded={len(all_items)}")
 
-    if not tracks_data or tracks_data.get("_err"):
-        err_code = (tracks_data or {}).get("_err", "?")
-        
-        if str(err_code) == "403":
+    # Paginazione manuale sugli items embedded (max 100 dal playlist object)
+    start = page * limit
+    end   = start + limit
+    items = all_items[start:end]
+
+    # Se non ci sono items embedded, prova /tracks come fallback
+    if not items and total_tracks > 0:
+        tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks", 
+                            params={
+                                "limit": limit, 
+                                "offset": offset,
+                                "market": "from_token",
+                                "fields": "items(track(name,uri,artists,duration_ms)),total"
+                            })
+        if tracks_data and not tracks_data.get("_err"):
+            items = tracks_data.get("items", [])
+        elif tracks_data and tracks_data.get("_not_registered"):
             await _edit(q,
-                f"{SEP}\n"
-                "🔒 *Permessi playlist insufficienti*\n"
-                f"{SEP}\n\n"
-                "Il token Spotify non ha i permessi per leggere i brani di questa playlist.\n\n"
-                "🔑 *Soluzione:* Riconnetti Spotify e accetta tutti i permessi.",
+                f"`{SEP}`\n"
+                "🔒 *USER NOT REGISTERED*\n"
+                f"`{SEP}`\n\n"
+                "Your account is not registered\n"
+                "in the Spotify Developer app.\n"
+                "Ask the admin to add your email.\n\n"
+                "Then press *Reconnect*.",
                 markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔄 Riconnetti Spotify", callback_data="reconnect"),
-                ],[
-                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+                    InlineKeyboardButton("🔌 Reconnect", callback_data="reconnect"),
                     InlineKeyboardButton("🏠 Menu", callback_data="back"),
                 ]])
             )
+            return
+        elif tracks_data and str(tracks_data.get("_err")) == "403":
+            # Permission issue but not "not registered"
+            log.warning(f"Tracks 403 for {pl_id}, using embedded only")
         else:
-            await _edit(q,
-                f"⚠️ Errore caricamento brani (codice {err_code})",
-                markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔄 Riprova", callback_data=f"pl:{pl_id}"),
-                    InlineKeyboardButton("🔙 Indietro", callback_data="back_playlists"),
-                ]])
-            )
-        return
+            log.warning(f"Tracks endpoint failed for {pl_id}: {tracks_data}")
 
-    items = tracks_data.get("items", [])
+    # items è già stato impostato sopra (da embedded tracks o fallback)
+    extra_note = ""
+    if total_tracks > len(all_items):
+        extra_note = f"\n_Showing {len(all_items)}/{total_tracks} — open Spotify for all_"
     
     if not items:
         await _edit(q,
             f"📋 *{pl_name}*\n\n"
-            "Questa playlist non contiene brani in questa pagina.",
+            "No tracks found on this page.",
             markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
                 InlineKeyboardButton("🏠 Menu", callback_data="back"),
@@ -2660,18 +2718,18 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         InlineKeyboardButton("🏠 Menu", callback_data="back"),
     ])
 
-    start_idx = offset + 1
-    end_idx = min(offset + track_count, total_tracks)
+    start_idx = start + 1
+    end_idx = min(start + track_count, total_tracks)
     
-    premium_status = "⭐ PREMIUM" if is_premium else "🆓 FREE (solo visualizzazione)"
+    premium_status = "⭐ PREMIUM" if is_premium else "🆓 FREE (view only)"
     
     await _edit(q,
-        f"{SEP}\n"
+        f"`{SEP}`\n"
         f"📋 *{pl_name}*\n"
-        f"{SEP}\n\n"
+        f"`{SEP}`\n\n"
         f"_{premium_status}_\n"
-        f"_Brani {start_idx}-{end_idx} di {total_tracks}_\n\n"
-        f"Seleziona un brano per riprodurlo:",
+        f"_Tracks {start_idx}-{end_idx} of {total_tracks}_\n\n"
+        f"Select a track to play:{extra_note}",
         markup=InlineKeyboardMarkup(rows)
     )
 
