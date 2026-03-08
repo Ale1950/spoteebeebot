@@ -433,26 +433,31 @@ def get_current_track_free(user: dict) -> dict | None:
     }
 
 def check_premium_status(user: dict) -> bool:
-    """Verifica se l'utente ha Spotify Premium e aggiorna il DB."""
+    """Verifica se l'utente ha Spotify Premium.
+    Legge dal DB (già impostato al login/reconnect).
+    Chiama /me solo se il valore non è ancora stato impostato."""
     if not user or not user.get("access_token"):
         return False
     
+    # Se già determinato nel DB, usa quello (evita chiamate API inutili)
+    stored = user.get("is_premium", -1)
+    if stored == 1:
+        return True
+    if stored == 0:
+        return False
+    
+    # Solo se mai verificato (-1): chiama /me una tantum
     profile = sp_get(user, "/me")
     if profile and not profile.get("_err"):
         product = (profile.get("product") or "").lower()
         is_premium = product == "premium"
-        
-        # Aggiorna il DB
         db_set(user["telegram_id"], is_premium=1 if is_premium else 0)
-        
-        if is_premium:
-            log.info(f"✅ Utente {user['telegram_id']} confermato Premium")
-        else:
-            log.info(f"⚠️ Utente {user['telegram_id']} è Free (product: {product})")
-        
+        log.info(f"{'✅' if is_premium else '⚠️'} Utente {user['telegram_id']} → {product}")
         return is_premium
     
-    return False
+    # Se /me fallisce (403, timeout, ecc), NON sovrascrivere il DB
+    # Ritorna il valore precedente o False
+    return bool(stored == 1)
 
 def _get_device_id_optional(user: dict) -> str | None:
     """
@@ -1959,11 +1964,6 @@ async def _toggle_shuffle(q, user: dict):
     """Attiva/disattiva shuffle con gestione errori migliorata."""
     tid = user["telegram_id"]
     
-    # Verifica Premium prima di procedere
-    if not check_premium_status(user):
-        await q.answer("🔒 Shuffle richiede Spotify Premium", show_alert=True)
-        return
-    
     current = bool(user.get("shuffle_on"))
     new_state = not current
     state_str = "true" if new_state else "false"
@@ -2008,11 +2008,6 @@ async def _toggle_shuffle(q, user: dict):
 async def _toggle_repeat(q, user: dict):
     """Cicla modalità repeat sincronizzata con Spotify reale."""
     tid = user["telegram_id"]
-    
-    # Verifica Premium prima di procedere
-    if not check_premium_status(user):
-        await q.answer("🔒 Repeat richiede Spotify Premium", show_alert=True)
-        return
 
     # Leggi lo stato REALE da Spotify
     player = sp_get(user, "/me/player")
