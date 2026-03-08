@@ -400,39 +400,48 @@ def open_spotify_redirect():
   </div>
   <script>
     var fallbackTimer = null;
-    var appOpened = false;
+    var closeTimer    = null;
+    var appOpened     = false;
+
+    function returnToTelegram() {{
+      // Tenta di chiudere il WebView (funziona in Telegram iOS/Android)
+      try {{ window.close(); }} catch(e) {{}}
+      // Fallback: apri il bot via deep link tg://
+      setTimeout(function() {{
+        window.location.href = "tg://resolve?domain=SpoteeBeeBot";
+      }}, 150);
+    }}
 
     function openApp() {{
-      // Avvia il timer PRIMA di aprire l'app
+      // Timer fallback web — se dopo 3s siamo ancora qui
       fallbackTimer = setTimeout(function() {{
-        // Siamo ancora qui dopo 3s → app non installata, apri web
         if (!appOpened) {{
           window.location.href = "{web_url}";
         }}
       }}, 3000);
 
-      // Prova ad aprire l'app
       window.location.href = "{spotify_uri}";
     }}
 
-    // Se la pagina va in background = l'app si è aperta
+    // La pagina va in background = l'app Spotify si è aperta
     document.addEventListener("visibilitychange", function() {{
-      if (document.hidden) {{
+      if (document.hidden && !appOpened) {{
         appOpened = true;
-        if (fallbackTimer) {{
-          clearTimeout(fallbackTimer);
-          fallbackTimer = null;
-        }}
+        if (fallbackTimer) {{ clearTimeout(fallbackTimer); fallbackTimer = null; }}
+        // Quando l'utente torna qui (da Spotify a Telegram),
+        // la pagina torna visibile → chiudi subito
+      }} else if (!document.hidden && appOpened) {{
+        // L'utente è tornato sulla pagina dopo aver aperto Spotify
+        // → chiudi il WebView e torna su Telegram
+        returnToTelegram();
       }}
     }});
 
-    // pagehide = navigazione via (es. torna a Telegram)
     window.addEventListener("pagehide", function() {{
       appOpened = true;
       if (fallbackTimer) {{ clearTimeout(fallbackTimer); }}
     }});
 
-    // Avvia subito
     openApp();
   </script>
 </body>
@@ -1265,24 +1274,28 @@ async def _send_stats(tid: int, message, edit=False):
 # -------------------------------------------------------
 async def _player_action(q, user: dict, action: str):
     """
-    Esegue play/pause/next/prev SENZA device_id.
-    Spotify instrada automaticamente al device attivo.
-    device_id è necessario solo per shuffle/repeat.
+    Esegue play/pause/next/prev.
+    Strategia: prende device_id veloce (1 tentativo, no retry).
+    Lo manda con il comando → funziona anche dopo pause su mobile.
+    Se non trovato, manda senza → Spotify prova con l'ultimo attivo.
     """
     tid = user["telegram_id"]
-
     icons = {"play": "▶️", "pause": "⏸️ Pausa.", "next": "⏭️ Avanti!", "prev": "⏮️ Indietro!"}
 
+    # Prendi device_id veloce — 1 sola chiamata, nessun retry/sleep
+    device_id = _get_device_id_optional(user)
+    params    = {"device_id": device_id} if device_id else {}
+    log.info(f"[player] action={action} device_id={device_id or 'none'}")
+
     if action == "play":
-        # Senza device_id — Spotify usa il device attivo in automatico
-        res = sp_put(user, "/me/player/play")
+        res    = sp_put(user, "/me/player/play", params=params)
         status = (res or {}).get("_status", 0)
-        log.info(f"[play] PUT /me/player/play (no device_id) → {status}")
+        log.info(f"[play] → {status}")
 
         if status == 404:
-            # Nessun contesto: prova recently played
-            log.info("[play] 404 — provo recently played")
-            recent = sp_get(user, "/me/player/recently-played", params={"limit": 1})
+            # Nessun contesto attivo: riprendi dall'ultima sessione
+            log.info("[play] 404 → provo recently-played")
+            recent  = sp_get(user, "/me/player/recently-played", params={"limit": 1})
             ctx_uri = None
             if recent and not recent.get("_err"):
                 items = recent.get("items", [])
@@ -1291,35 +1304,33 @@ async def _player_action(q, user: dict, action: str):
                     if ctx and ctx.get("uri"):
                         ctx_uri = ctx["uri"]
             if ctx_uri:
-                res = sp_put(user, "/me/player/play", body={"context_uri": ctx_uri})
+                res    = sp_put(user, "/me/player/play", params=params,
+                                body={"context_uri": ctx_uri})
+                status = (res or {}).get("_status", 0)
             else:
+                # Ultima spiaggia: brani salvati
                 liked = sp_get(user, "/me/tracks", params={"limit": 20})
-                uris = [item["track"]["uri"] for item in (liked or {}).get("items", [])
-                        if item.get("track") and item["track"].get("uri")]
+                uris  = [it["track"]["uri"] for it in (liked or {}).get("items", [])
+                         if it.get("track") and it["track"].get("uri")]
                 if uris:
-                    res = sp_put(user, "/me/player/play", body={"uris": uris})
+                    res    = sp_put(user, "/me/player/play", params=params,
+                                    body={"uris": uris})
+                    status = (res or {}).get("_status", 0)
                 else:
-                    await q.answer("⚠️ Apri Spotify, avvia un brano manualmente, poi premi ▶️", show_alert=True)
+                    await q.answer("⚠️ Apri Spotify, avvia un brano, poi ripremi ▶️",
+                                   show_alert=True)
                     return
-            status = (res or {}).get("_status", 0)
-
-        if status == 202 or status == 204:
-            # Spotify ha accettato ma forse nessun device era attivo — aspetta e ricontrolla
-            time.sleep(0.5)
-            # Tenta una seconda volta se serve
-            res2 = sp_put(user, "/me/player/play")
-            status = (res2 or {}).get("_status", status)
 
     elif action == "pause":
-        res = sp_put(user, "/me/player/pause")
+        res    = sp_put(user, "/me/player/pause", params=params)
         status = (res or {}).get("_status", 0)
         log.info(f"[pause] → {status}")
     elif action == "next":
-        res = sp_post(user, "/me/player/next")
+        res    = sp_post(user, "/me/player/next")
         status = (res or {}).get("_status", 0)
         log.info(f"[next] → {status}")
     elif action == "prev":
-        res = sp_post(user, "/me/player/previous")
+        res    = sp_post(user, "/me/player/previous")
         status = (res or {}).get("_status", 0)
         log.info(f"[prev] → {status}")
     else:
@@ -1330,23 +1341,8 @@ async def _player_action(q, user: dict, action: str):
     elif status == 403:
         await q.answer("⚠️ Serve Spotify Premium per i controlli.", show_alert=True)
     elif status == 404:
-        await q.answer()
-        await _edit(q,
-            f"`{SEP_S}`\n"
-            "📱 *Nessun device trovato*\n"
-            f"`{SEP_S}`\n\n"
-            "Spotify non vede nessun dispositivo attivo.\n\n"
-            "✅ *Cosa fare:*\n"
-            "1. Apri l'app Spotify\n"
-            "2. Avvia manualmente un brano\n"
-            "3. Torna qui e premi ▶️\n\n"
-            "_Dopo aver avviato la musica una volta,_\n"
-            "_i controlli funzioneranno normalmente._",
-            markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Riprova ▶️", callback_data="play"),
-                InlineKeyboardButton("🏠 Menu",       callback_data="back"),
-            ]])
-        )
+        # Ancora 404 dopo tutti i tentativi → device non trovato
+        await q.answer("⚠️ Apri Spotify e avvia un brano, poi ripremi.", show_alert=True)
     else:
         log.error(f"[player] azione={action} status={status} res={res}")
         await q.answer(f"⚠️ Errore Spotify ({status}).", show_alert=True)
