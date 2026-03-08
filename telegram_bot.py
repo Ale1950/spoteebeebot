@@ -8,7 +8,7 @@ Novità v3.0:
 - ZERO messaggi extra: shuffle/repeat/now_playing aggiornano solo bottoni e caption
 - Repeat/Shuffle sincronizzati con stato REALE di Spotify
 - Premium check corretto (aggiunto scope user-read-private)
-- Playlist tracks via /playlists/{id} (bypassa 403 di /tracks in Dev Mode)
+- Playlist tracks via /playlists/{id}/tracks con paginazione reale
 - Apri Spotify con universal link (apre app se installata)
 - Auto-refresh titolo brano nella caption menu foto
 """
@@ -526,10 +526,9 @@ def oauth_cb():
     def _send_menu_after(tid_inner, user_inner):
         import time as _time
         _time.sleep(2)
-        mining  = bool((user_inner or {}).get("mining_active"))
         menu_txt = (
             f"{hdr_menu(user_inner)}\n\n"
-            f"{mining_status_line(mining)}\n"
+            f"{mining_line_from_user(user_inner)}\n"
             f"`▸ scegli un'opzione`"
         )
         _run_async(_send_photo(tid_inner, menu_txt, main_kb(user_inner)))
@@ -652,14 +651,13 @@ def _poll_user(user: dict):
             if tid in _session_start:
                 mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
                 stats_increment(tid, minutes=mins)
+            updated_user = db_get(tid)
             stopped_txt = (
                 "⏹️  *Nessuna riproduzione*\n"
                 "`· · · · · · · · ·`\n"
-                "⚫ Mine Nackles in pausa"
+                + mining_line_from_user(updated_user)
             )
             _run_async(_update_now_playing(tid, stopped_txt))
-            # Aggiorna la caption del menu foto
-            updated_user = db_get(tid)
             _run_async(_update_menu_caption(tid, updated_user))
         return
 
@@ -679,15 +677,14 @@ def _poll_user(user: dict):
         stats_increment(tid, sessions=1, tracks=1)
         _session_start[tid] = now_ts()
 
+        updated_user = db_get(tid)
         now_playing_txt = (
             f"▶️  *{track}*\n"
             f"    {artist}\n"
             "`· · · · · · · · ·`\n"
-            "⛏️ Mine Nackles attivo"
+            + mining_line_from_user(updated_user)
         )
         _run_async(_update_now_playing(tid, now_playing_txt))
-        # Aggiorna anche la caption sotto l'immagine Acki Jewels
-        updated_user = db_get(tid)
         _run_async(_update_menu_caption(tid, updated_user))
 
 # -------------------------------------------------------
@@ -749,6 +746,14 @@ def menu_row():
     """Riga standard con tasto Menu — appare in ogni schermata."""
     return [InlineKeyboardButton("🏠 Menu", callback_data="back")]
 
+def mining_line_from_user(user: dict | None) -> str:
+    """Calcola mining_status_line leggendo user dal DB."""
+    if not user:
+        return mining_status_line(False, False)
+    active     = bool(user.get("mining_active"))
+    is_playing = bool(user.get("last_track", ""))   # last_track non vuoto = musica in play
+    return mining_status_line(active, is_playing)
+
 def firma() -> str:
     return "\n`                — Acki Jewels 💎`"
 
@@ -794,10 +799,17 @@ def hdr_playlist() -> str:
 def hdr_track() -> str:
     return f"`{SEP_S}`"
 
-def mining_status_line(active: bool) -> str:
+def mining_status_line(active: bool, is_playing: bool = False) -> str:
+    """
+    active    = utente ha abilitato il mining
+    is_playing = musica in riproduzione in questo momento
+    Colori: 🔵 musica in play, 🔴 abilitato ma fermo, ⚫ disabilitato
+    """
+    if active and is_playing:
+        return "🔵 *Mine Nackles:* `● IN ASCOLTO`  ⛏️"
     if active:
-        return "🔴 *Mine Nackles:* `● ATTIVO`  ⛏️"
-    return "⚫ *Mine Nackles:* `○ IN PAUSA`"
+        return "🔴 *Mine Nackles:* `○ IN ATTESA`  ⛏️"
+    return "⚫ *Mine Nackles:* `○ DISABILITATO`"
 
 def progress_bar(pct: int) -> str:
     """Barra stile Obsidian Ember: blocchi pieni + vuoti."""
@@ -929,10 +941,9 @@ async def _update_menu_caption(tid: int, user: dict):
     msg_id = (user or {}).get("menu_msg_id", 0) or 0
     if not msg_id:
         return
-    mining = bool(user and user.get("mining_active"))
     txt = (
         f"{hdr_menu(user)}\n\n"
-        f"{mining_status_line(mining)}\n"
+        f"{mining_line_from_user(user)}\n"
         f"`▸ scegli un'opzione`"
     )
     try:
@@ -960,7 +971,7 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
     else:
         # Riga 1: stato, stats, playlist (tutti)
         rows.append([
-            InlineKeyboardButton("🔴 Stato",   callback_data="status"),
+            InlineKeyboardButton("🔵 Stato" if bool(user and user.get("last_track")) else "🔴 Stato", callback_data="status"),
             InlineKeyboardButton("📊 Stats",   callback_data="stats"),
             InlineKeyboardButton("🎼 Playlist", callback_data="playlists"),
         ])
@@ -1119,7 +1130,7 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🎵  Brani:       *{total['tracks_heard']}*\n"
             f"⏱️  Tempo totale: *{fmt(total['mining_minutes'])}*\n"
             f"📆  Giorni attivi: *{total['days_active']}*\n\n"
-            f"{mining_status_line(mining)}"
+            f"{mining_line_from_user(user)}"
             f"{firma()}"
         )
         if os.path.exists(ACKI_IMAGE):
@@ -1149,10 +1160,9 @@ async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid  = update.effective_user.id
     user = db_get(tid)
     user = _sync_player_state(user)
-    mining = bool(user and user.get("mining_active"))
     txt = (
         f"{hdr_menu(user)}\n\n"
-        f"{mining_status_line(mining)}\n"
+        f"{mining_line_from_user(user)}\n"
         f"`▸ scegli un'opzione`"
     )
     if os.path.exists(ACKI_IMAGE):
@@ -1559,7 +1569,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_upd = db_get(tid)
         txt_on = (
             f"{hdr_menu(user_upd)}\n\n"
-            "⛏️ *Mine Nackles ATTIVO!*\n"
+            f"{mining_line_from_user(user_upd)}\n"
             "`▸ scegli un'opzione`"
         )
         await _edit(q, txt_on, markup=main_kb(user_upd))
@@ -1572,7 +1582,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_upd = db_get(tid)
         txt_off = (
             f"{hdr_menu(user_upd)}\n\n"
-            "⚫ *Mine Nackles SOSPESO*\n"
+            f"{mining_line_from_user(user_upd)}\n"
             "`▸ scegli un'opzione`"
         )
         await _edit(q, txt_off, markup=main_kb(user_upd))
@@ -1709,10 +1719,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "back":
         user = db_get(tid)
         user = _sync_player_state(user)
-        mining = bool(user and user.get("mining_active"))
         txt = (
             f"{hdr_menu(user)}\n\n"
-            f"{mining_status_line(mining)}\n"
+            f"{mining_line_from_user(user)}\n"
             f"`▸ scegli un'opzione`"
         )
         await _edit(q, txt, markup=main_kb(user))
@@ -1835,118 +1844,122 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         await _edit(q, "❌ Non connesso.")
         return
 
-    limit = 6
+    limit  = 6
+    offset = page * limit
 
-    # Usa SOLO /playlists/{id} che restituisce fino a 100 brani embedded
-    # Questo bypassa il 403 di /playlists/{id}/tracks in Dev Mode
-    pl_data = sp_get(user, f"/playlists/{pl_id}")
+    # Step 1: info playlist (nome, uri, totale)
+    pl_data = sp_get(user, f"/playlists/{pl_id}",
+                     params={"fields": "name,uri,tracks.total"})
+    if not pl_data or pl_data.get("_err"):
+        # Fallback senza fields filter
+        pl_data = sp_get(user, f"/playlists/{pl_id}")
 
     if not pl_data or pl_data.get("_err"):
         err_code = (pl_data or {}).get("_err", "?")
         body_info = str((pl_data or {}).get("_body", ""))[:120]
-        log.error(f"Playlist error: pl_id={pl_id} err={err_code}")
-
-        if str(err_code) == "403":
-            msg = (
-                f"`{SEP}`\n"
-                f"🔒 *Errore 403 — Accesso negato*\n"
-                f"`{SEP}`\n\n"
-                "Spotify blocca l'accesso a questa playlist.\n\n"
-                "🔴 *Soluzioni:*\n"
-                "1️⃣ Vai su [Spotify Dashboard]"
-                "(https://developer.spotify.com/dashboard)\n"
-                "2️⃣ Apri la tua app → *Settings*\n"
-                "3️⃣ In *User Management* aggiungi\n"
-                "   la tua email Spotify\n"
-                "4️⃣ Torna qui → *Riconnetti*\n\n"
-                "⚠️ _In Development Mode solo utenti_\n"
-                "_aggiunti possono usare tutte le API._"
-            )
-        else:
-            msg = (
-                f"⚠️ Errore Spotify `{err_code}`:\n"
-                f"`{body_info}`\n\n"
-                "Riprova o premi Riconnetti."
-            )
-        await _edit(q, msg,
-            markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
-                InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-            ],[
-                InlineKeyboardButton("🔌 Riconnetti Spotify", callback_data="reconnect"),
-            ],[
-                InlineKeyboardButton("🏠 Menu", callback_data="back"),
-            ]])
-        )
+        log.error(f"Playlist info error: pl_id={pl_id} err={err_code} body={body_info}")
+        error_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
+            InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+        ],[
+            InlineKeyboardButton("🔌 Riconnetti", callback_data="reconnect"),
+            InlineKeyboardButton("🏠 Menu",       callback_data="back"),
+        ]])
+        await _edit(q, f"⚠️ Errore caricamento playlist (`{err_code}`).\n`{body_info}`", markup=error_kb)
         return
 
-    pl_name   = pl_data.get("name", "Playlist")
-    pl_uri    = pl_data.get("uri", "")
-    tracks_obj = pl_data.get("tracks") or {}
-    all_items = tracks_obj.get("items", [])
-    total     = tracks_obj.get("total", len(all_items))
+    pl_name = pl_data.get("name", "Playlist")
+    pl_uri  = pl_data.get("uri", "")
+    total   = (pl_data.get("tracks") or {}).get("total", 0)
+    pages   = max(1, (total + limit - 1) // limit)
 
-    log.info(f"Playlist OK: {pl_name}, total={total}, embedded={len(all_items)}")
+    # Step 2: brani pagina corrente via /playlists/{id}/tracks con offset
+    tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
+                         params={"limit": limit, "offset": offset,
+                                 "fields": "items(track(name,uri,duration_ms,artists,type))"})
+    if not tracks_data or tracks_data.get("_err"):
+        # Fallback senza fields
+        tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
+                             params={"limit": limit, "offset": offset})
 
-    # Paginazione manuale sugli items embedded
-    start = page * limit
-    end   = start + limit
-    items = all_items[start:end]
-    pages = max(1, (min(total, len(all_items)) + limit - 1) // limit)
+    if not tracks_data or tracks_data.get("_err"):
+        err_code = (tracks_data or {}).get("_err", "?")
+        body_info = str((tracks_data or {}).get("_body", ""))[:120]
+        log.error(f"Tracks error: pl_id={pl_id} page={page} err={err_code} body={body_info}")
+        error_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
+            InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+        ],[
+            InlineKeyboardButton("🔌 Riconnetti", callback_data="reconnect"),
+            InlineKeyboardButton("🏠 Menu",       callback_data="back"),
+        ]])
+        if str(err_code) == "403":
+            msg = (
+                f"`{SEP}`\n🔒 *Errore 403*\n`{SEP}`\n\n"
+                "Permessi mancanti per leggere i brani.\n\n"
+                "🔴 Premi *Riconnetti Spotify* per\n"
+                "aggiornare i permessi."
+            )
+        else:
+            msg = f"⚠️ Errore brani (`{err_code}`).\n`{body_info}`"
+        await _edit(q, msg, markup=error_kb)
+        return
+
+    items = tracks_data.get("items", [])
+    log.info(f"Playlist '{pl_name}': total={total} page={page} items_loaded={len(items)}")
 
     rows = []
 
-    # Bottone avvia playlist intera
+    # Bottone avvia tutta la playlist
     if pl_uri:
         rows.append([InlineKeyboardButton(
-            f"▶️ Avvia tutta «{pl_name[:25]}»",
+            f"▶️ Avvia tutta «{pl_name[:22]}»",
             callback_data=f"playpl:{pl_uri}"
         )])
 
-    # Brani
+    # Brani della pagina corrente
+    count = 0
     for item in items:
         track = item.get("track") if item else None
-        if not track or track.get("type") == "episode":
+        if not track or not track.get("uri") or track.get("type") == "episode":
             continue
-        name   = track.get("name", "?")[:28]
-        artist = (track.get("artists") or [{}])[0].get("name", "")[:18]
+        name   = track.get("name", "?")[:26]
+        artist = (track.get("artists") or [{}])[0].get("name", "")[:16]
         uri    = track.get("uri", "")
         dur_ms = track.get("duration_ms", 0)
         mins   = dur_ms // 60000
         secs   = (dur_ms % 60000) // 1000
-
         rows.append([InlineKeyboardButton(
-            f"▶️ {name} — {artist} ({mins}:{secs:02d})",
+            f"▶️ {name} — {artist}  {mins}:{secs:02d}",
             callback_data=f"playtrack:{uri}"
         )])
+        count += 1
 
-    if len(rows) <= 1 and not items:
-        rows.append([InlineKeyboardButton("(Nessun brano trovato)", callback_data="noop")])
+    if count == 0:
+        rows.append([InlineKeyboardButton("(Nessun brano in questa pagina)", callback_data="noop")])
 
     # Navigazione pagine
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀️", callback_data=f"pltracks:{pl_id}:{page-1}"))
-    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="noop"))
+        nav.append(InlineKeyboardButton("◀️ Prec", callback_data=f"pltracks:{pl_id}:{page-1}"))
+    nav.append(InlineKeyboardButton(f"  {page+1} / {pages}  ", callback_data="noop"))
     if page < pages - 1:
-        nav.append(InlineKeyboardButton("▶️", callback_data=f"pltracks:{pl_id}:{page+1}"))
-    if nav:
+        nav.append(InlineKeyboardButton("Succ ▶️", callback_data=f"pltracks:{pl_id}:{page+1}"))
+    if len(nav) > 1:
         rows.append(nav)
-
-    # Nota se ci sono più di 100 brani
-    extra = ""
-    if total > len(all_items):
-        extra = f"\n_Mostrati {len(all_items)}/{total} — apri Spotify per tutti_"
 
     rows.append([
         InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
         InlineKeyboardButton("🏠 Menu",     callback_data="back"),
     ])
 
+    shown_start = offset + 1
+    shown_end   = min(offset + count, total)
     await _edit(q,
         f"{hdr_playlist()}\n\n"
-        f"📋 *{pl_name}*  _({total} brani)_\n\n"
-        f"Premi ▶️ per avviare:{extra}",
+        f"📋 *{pl_name}*\n"
+        f"_{shown_start}–{shown_end} di {total} brani_\n\n"
+        f"Premi ▶️ per avviare:",
         markup=InlineKeyboardMarkup(rows)
     )
 
