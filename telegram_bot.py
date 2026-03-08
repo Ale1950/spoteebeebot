@@ -1177,10 +1177,25 @@ async def _send_photo(tid: int, caption: str, markup=None):
                 )
                 db_set(tid, menu_msg_id=sent.message_id)
                 return
-        await _send(tid, caption, markup)
+        # Fallback testo: salva menu_msg_id ugualmente
+        try:
+            sent = await _tg_app.bot.send_message(
+                chat_id=tid, text=caption,
+                parse_mode="Markdown", reply_markup=markup
+            )
+            db_set(tid, menu_msg_id=sent.message_id)
+        except Exception as e2:
+            log.error(f"Send text fallback error a {tid}: {e2}")
     except Exception as e:
         log.error(f"Send photo error a {tid}: {e}")
-        await _send(tid, caption, markup)
+        try:
+            sent = await _tg_app.bot.send_message(
+                chat_id=tid, text=caption,
+                parse_mode="Markdown", reply_markup=markup
+            )
+            db_set(tid, menu_msg_id=sent.message_id)
+        except Exception as e2:
+            log.error(f"Send text fallback2 error a {tid}: {e2}")
 
 
 async def _update_menu_caption(tid: int, user: dict):
@@ -1189,6 +1204,27 @@ async def _update_menu_caption(tid: int, user: dict):
         return
     msg_id = (user or {}).get("menu_msg_id", 0) or 0
     if not msg_id:
+        # Nessun menu msg salvato → manda nuovo e salva id
+        try:
+            txt_new = (
+                f"{hdr_menu(user)}\n\n"
+                f"{mining_line_from_user(user)}\n"
+                f"`▸ scegli un'opzione`"
+            )
+            if os.path.exists(ACKI_IMAGE):
+                with open(ACKI_IMAGE, "rb") as img:
+                    sent = await _tg_app.bot.send_photo(
+                        chat_id=tid, photo=img, caption=txt_new,
+                        parse_mode="Markdown", reply_markup=main_kb(user)
+                    )
+            else:
+                sent = await _tg_app.bot.send_message(
+                    chat_id=tid, text=txt_new,
+                    parse_mode="Markdown", reply_markup=main_kb(user)
+                )
+            db_set(tid, menu_msg_id=sent.message_id)
+        except Exception as e:
+            log.error(f"_update_menu_caption new msg error {tid}: {e}")
         return
     txt = (
         f"{hdr_menu(user)}\n\n"
@@ -1545,9 +1581,17 @@ async def _player_action(q, user: dict, action: str):
     if status in (200, 202, 204):
         await q.answer(icons.get(action, "✅"), show_alert=False)
     elif status == 403:
-        await q.answer("⚠️ Serve Spotify Premium per i controlli.", show_alert=True)
+        # Free mobile: Spotify non permette on-demand playback
+        # Premium: token senza i permessi giusti → riconnetti
+        is_prem = bool(user.get("is_premium", 0) == 1)
+        if is_prem:
+            await q.answer("⚠️ Errore permessi — premi Riconnetti Spotify.", show_alert=True)
+        else:
+            await q.answer(
+                "⚠️ Spotify Free limita questa azione su mobile.\n"
+                "Su desktop/web funziona normalmente.", show_alert=True)
     elif status == 404:
-        # Ancora 404 dopo tutti i tentativi → device non trovato
+        # Device non trovato
         await q.answer(t("no_device", lang), show_alert=True)
     else:
         log.error(f"[player] azione={action} status={status} res={res}")
@@ -1557,6 +1601,7 @@ async def _player_action(q, user: dict, action: str):
 async def _toggle_shuffle(q, user: dict):
     """Attiva/disattiva shuffle su Spotify. Solo toast + aggiorna bottoni."""
     tid       = user["telegram_id"]
+    lang      = _user_lang.get(tid, "it")
     current   = bool(user.get("shuffle_on"))
     new_state = not current
     state_str = "true" if new_state else "false"
@@ -1602,14 +1647,13 @@ async def _toggle_repeat(q, user: dict):
     labels   = {"off": "🔁 Repeat OFF", "context": "🔁 Repeat Playlist", "track": "🔂 Repeat 1 Brano"}
 
     device_id = _get_device_id_optional(user)
-    if not device_id:
-        await q.answer("⚠️ Apri Spotify e avvia un brano prima di usare Repeat.", show_alert=True)
-        return
+    params_r  = {"state": new_mode}
+    if device_id:
+        params_r["device_id"] = device_id
 
-    res    = sp_put(user, "/me/player/repeat",
-                    params={"state": new_mode, "device_id": device_id})
+    res    = sp_put(user, "/me/player/repeat", params=params_r)
     status = (res or {}).get("_status", 0)
-    log.info(f"Repeat toggle → mode={new_mode} (was {real_repeat}) device={device_id} result={status}")
+    log.info(f"Repeat toggle → mode={new_mode} (was {real_repeat}) device={device_id} status={status}")
 
     if status in (200, 202, 204):
         db_set(tid, repeat_mode=new_mode)
@@ -1617,9 +1661,12 @@ async def _toggle_repeat(q, user: dict):
         await q.answer(labels.get(new_mode, "✅"), show_alert=False)
         await _edit(q, markup=main_kb(updated_user))
     elif status == 403:
-        await q.answer("⚠️ Serve Spotify Premium per Repeat.", show_alert=True)
+        # 403 = Premium required per repeat (Spotify API)
+        await q.answer("🔒 Repeat richiede Spotify Premium.", show_alert=True)
+    elif status == 404:
+        await q.answer("⚠️ Apri Spotify e avvia un brano, poi riprova.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore Spotify ({status})", show_alert=True)
+        await q.answer(f"⚠️ Errore Spotify ({status}) — riprova.", show_alert=True)
 
 
 async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1631,15 +1678,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Handler che gestiscono q.answer() internamente (toast personalizzati)
     if data == "shuffle_toggle":
-        if not (user and user.get("is_premium", 0) == 1):
-            await q.answer("🔒 Spotify Premium required for this.", show_alert=True)
-            return
         await _toggle_shuffle(q, user)
         return
     if data == "repeat_toggle":
-        if not (user and user.get("is_premium", 0) == 1):
-            await q.answer("🔒 Spotify Premium required for this.", show_alert=True)
-            return
         await _toggle_repeat(q, user)
         return
     if data in ("play", "pause", "next", "prev"):
@@ -2128,10 +2169,15 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         ]])
         if str(err_code) == "403":
             msg = (
-                f"`{SEP}`\n🔒 *Errore 403*\n`{SEP}`\n\n"
-                "Permessi mancanti per leggere i brani.\n\n"
-                "🔴 Premi *Riconnetti Spotify* per\n"
-                "aggiornare i permessi."
+                f"`{SEP}`\n"
+                "🔒 *Permessi playlist mancanti*\n"
+                f"`{SEP}`\n\n"
+                "Il tuo token Spotify non include\n"
+                "il permesso per leggere i brani.\n\n"
+                "✅ *Soluzione rapida:*\n"
+                "Premi *Riconnetti Spotify* per\n"
+                "aggiornare i permessi.\n\n"
+                "_Operazione richiesta una sola volta._"
             )
         else:
             msg = f"⚠️ Errore brani (`{err_code}`).\n`{body_info}`"
