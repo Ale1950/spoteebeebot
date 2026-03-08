@@ -1151,25 +1151,61 @@ async def _update_now_playing(tid: int, text: str):
         await _update_menu_caption(tid, user)
 
 async def _edit(q, txt: str = "", markup=None):
-    """Modifica il messaggio sia se è foto (caption) che testo normale.
-    Se txt è vuoto, modifica solo il markup senza toccare il testo."""
-    if txt:
+    """
+    Edita SEMPRE la caption del messaggio foto persistente (menu_msg_id).
+    L'immagine rimane come sfondo fisso — solo il testo/bottoni cambiano.
+    """
+    tid = q.from_user.id if hasattr(q, "from_user") else None
+
+    # Recupera menu_msg_id dal DB
+    mid = 0
+    if tid:
+        u = db_get(tid)
+        mid = (u or {}).get("menu_msg_id", 0) or 0
+
+    if mid and tid:
+        # Edita il messaggio foto persistente
         try:
-            await q.edit_message_caption(caption=txt, parse_mode="Markdown", reply_markup=markup)
-            return
-        except Exception:
-            pass
-        try:
-            await q.edit_message_text(text=txt, parse_mode="Markdown", reply_markup=markup)
+            if txt:
+                await _tg_app.bot.edit_message_caption(
+                    chat_id=tid, message_id=mid,
+                    caption=txt, parse_mode="Markdown", reply_markup=markup
+                )
+            else:
+                await _tg_app.bot.edit_message_reply_markup(
+                    chat_id=tid, message_id=mid, reply_markup=markup
+                )
+            try:
+                await q.answer()
+            except Exception:
+                pass
             return
         except Exception as e:
-            log.error(f"Edit error: {e}")
-    else:
-        # Solo aggiorna la tastiera
+            log.warning(f"_edit foto {mid}: {e} — mando nuovo")
+
+    # Fallback: il messaggio foto non esiste più → manda nuova foto
+    if tid and _tg_app:
         try:
-            await q.edit_message_reply_markup(reply_markup=markup)
+            if os.path.exists(ACKI_IMAGE):
+                with open(ACKI_IMAGE, "rb") as img:
+                    sent = await _tg_app.bot.send_photo(
+                        chat_id=tid, photo=img,
+                        caption=txt or "🐝 Menu",
+                        parse_mode="Markdown", reply_markup=markup
+                    )
+                    db_set(tid, menu_msg_id=sent.message_id)
+            else:
+                sent = await _tg_app.bot.send_message(
+                    chat_id=tid, text=txt or "🐝 Menu",
+                    parse_mode="Markdown", reply_markup=markup
+                )
+                db_set(tid, menu_msg_id=sent.message_id)
         except Exception as e:
-            log.error(f"Edit markup error: {e}")
+            log.error(f"_edit fallback send: {e}")
+    try:
+        await q.answer()
+    except Exception:
+        pass
 
 async def _send_photo(tid: int, caption: str, markup=None):
     """Manda il messaggio con l'immagine Acki Jewels come header.
@@ -1656,39 +1692,41 @@ async def _player_action(q, user: dict, action: str):
 
 
 async def _toggle_shuffle(q, user: dict):
-    """Attiva/disattiva shuffle su Spotify. Solo toast + aggiorna bottoni."""
+    """Attiva/disattiva shuffle. Richiede brano in play su Spotify."""
     tid       = user["telegram_id"]
-    lang      = _user_lang.get(tid, "it")
     current   = bool(user.get("shuffle_on"))
     new_state = not current
     state_str = "true" if new_state else "false"
 
-    device_id  = _get_device_id_optional(user)
-    params_sh  = {"state": state_str}
-    if device_id:
-        params_sh["device_id"] = device_id
+    # Spotify richiede device_id per shuffle — obbligatorio
+    device_id = _get_device_id_optional(user)
+    if not device_id:
+        await q.answer("⚠️ Avvia un brano su Spotify, poi riprova Shuffle.", show_alert=True)
+        return
 
-    res    = sp_put(user, "/me/player/shuffle", params=params_sh)
+    res    = sp_put(user, "/me/player/shuffle",
+                    params={"state": state_str, "device_id": device_id})
     status = (res or {}).get("_status", 0)
     body   = (res or {}).get("_body", {})
-    log.info(f"[shuffle] state={state_str} device={device_id or 'none'} status={status} body={body}")
+    reason = str(body.get("error", {}).get("reason", "")).upper()
+    log.info(f"[shuffle] state={state_str} device={device_id} status={status} reason={reason}")
 
     if status in (200, 202, 204):
         db_set(tid, shuffle_on=1 if new_state else 0)
         updated_user = db_get(tid)
-        label = "🔀 Shuffle ON ●" if new_state else "🔀 Shuffle OFF"
+        label = "🔀 Shuffle ON" if new_state else "🔀 Shuffle OFF"
         await q.answer(label, show_alert=False)
         await _edit(q, markup=main_kb(updated_user))
     elif status == 403:
-        err_reason = str(body.get("error", {}).get("reason", "")).lower()
-        if "premium" in err_reason or "premium" in str(body).lower():
+        if "PREMIUM" in reason:
             await q.answer("🔒 Shuffle richiede Spotify Premium.", show_alert=True)
         else:
-            await q.answer("⚠️ Shuffle: avvia Spotify e premi play prima.", show_alert=True)
+            # NOT_PLAYING_LOCALLY o PLAYER_COMMAND_FAILED
+            await q.answer("⚠️ Avvia la musica su Spotify prima di usare Shuffle.", show_alert=True)
     elif status == 404:
-        await q.answer("⚠️ Apri Spotify, avvia un brano, poi riprova.", show_alert=True)
+        await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore shuffle ({status}). Riprova.", show_alert=True)
+        await q.answer(f"⚠️ Errore Spotify ({status}:{reason}). Riprova.", show_alert=True)
 
 
 async def _toggle_repeat(q, user: dict):
@@ -1710,16 +1748,16 @@ async def _toggle_repeat(q, user: dict):
     labels   = {"off": "🔁 Repeat OFF", "context": "🔁 Repeat Playlist", "track": "🔂 Repeat 1 Brano"}
 
     device_id = _get_device_id_optional(user)
-    params_r  = {"state": new_mode}
-    if device_id:
-        params_r["device_id"] = device_id
+    if not device_id:
+        await q.answer("⚠️ Avvia un brano su Spotify, poi riprova Repeat.", show_alert=True)
+        return
 
-    res    = sp_put(user, "/me/player/repeat", params=params_r)
+    res    = sp_put(user, "/me/player/repeat",
+                    params={"state": new_mode, "device_id": device_id})
     status = (res or {}).get("_status", 0)
-    log.info(f"Repeat toggle → mode={new_mode} (was {real_repeat}) device={device_id} status={status}")
-
     body_r = (res or {}).get("_body", {})
-    log.info(f"[repeat] mode={new_mode} device={device_id or 'none'} status={status} body={body_r}")
+    reason = str(body_r.get("error", {}).get("reason", "")).upper()
+    log.info(f"[repeat] mode={new_mode} device={device_id} status={status} reason={reason}")
 
     if status in (200, 202, 204):
         db_set(tid, repeat_mode=new_mode)
@@ -1727,15 +1765,14 @@ async def _toggle_repeat(q, user: dict):
         await q.answer(labels.get(new_mode, "✅"), show_alert=False)
         await _edit(q, markup=main_kb(updated_user))
     elif status == 403:
-        err_reason = str(body_r.get("error", {}).get("reason", "")).lower()
-        if "premium" in err_reason or "premium" in str(body_r).lower():
+        if "PREMIUM" in reason:
             await q.answer("🔒 Repeat richiede Spotify Premium.", show_alert=True)
         else:
-            await q.answer("⚠️ Repeat: avvia Spotify e premi play prima.", show_alert=True)
+            await q.answer("⚠️ Avvia la musica su Spotify prima di usare Repeat.", show_alert=True)
     elif status == 404:
-        await q.answer("⚠️ Apri Spotify, avvia un brano, poi riprova.", show_alert=True)
+        await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore repeat ({status}). Riprova.", show_alert=True)
+        await q.answer(f"⚠️ Errore Spotify ({status}:{reason}). Riprova.", show_alert=True)
 
 
 async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
