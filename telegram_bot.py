@@ -637,31 +637,36 @@ def oauth_cb():
     <h2>{pg_title}</h2>
     <div class="sep">▬▬▬▬▬▬▬▬</div>
     <p>{pg_body}</p>
-    <button class="btn" onclick="openTelegram()">{pg_btn}</button>
+    <button class="btn" id="tgBtn" onclick="goTelegram()">{pg_btn}</button>
     <p class="sig">— Acki Jewels 💎</p>
   </div>
   <script>
-    function openTelegram() {{
-      var ua = navigator.userAgent || "";
-      var isAndroid = /android/i.test(ua);
-      var isIOS = /iphone|ipad|ipod/i.test(ua);
+    var alreadyGone = false;
 
-      if (isAndroid) {{
-        // Android: usa intent:// per aprire Telegram da WebView
-        window.location.href = "intent://resolve?domain=SpoteeBeeBot#Intent;scheme=tg;package=org.telegram.messenger;end";
-        setTimeout(function() {{
-          // Fallback: try standard tg:// anyway
-          window.location.href = "tg://resolve?domain=SpoteeBeeBot";
-        }}, 500);
-      }} else if (isIOS) {{
+    function goTelegram() {{
+      if (alreadyGone) return;
+      alreadyGone = true;
+      // 1) Prova window.close() — chiude il WebView in-app di Telegram
+      try {{ window.close(); }} catch(e) {{}}
+      // 2) Dopo 200ms prova tg:// deep link
+      setTimeout(function() {{
         window.location.href = "tg://resolve?domain=SpoteeBeeBot";
-      }} else {{
-        window.location.href = "tg://resolve?domain=SpoteeBeeBot";
-      }}
+      }}, 200);
     }}
 
-    // Auto-apri dopo 1.5s
-    setTimeout(function() {{ openTelegram(); }}, 1500);
+    // Auto-trigger dopo 1.8s
+    setTimeout(function() {{ goTelegram(); }}, 1800);
+
+    // Se la pagina torna visibile dopo essere stata in bg (utente è tornato qui)
+    // → ritenta subito la chiusura
+    document.addEventListener("visibilitychange", function() {{
+      if (!document.hidden && alreadyGone) {{
+        try {{ window.close(); }} catch(e) {{}}
+        setTimeout(function() {{
+          window.location.href = "tg://resolve?domain=SpoteeBeeBot";
+        }}, 100);
+      }}
+    }});
   </script>
 </body>
 </html>"""
@@ -1591,8 +1596,31 @@ async def _player_action(q, user: dict, action: str):
                 "⚠️ Spotify Free limita questa azione su mobile.\n"
                 "Su desktop/web funziona normalmente.", show_alert=True)
     elif status == 404:
-        # Device non trovato
-        await q.answer(t("no_device", lang), show_alert=True)
+        # Device non trovato → schermata con istruzioni dettagliate
+        has_app = bool(user.get("has_app", -1) == 1)
+        spotify_btn_url = (
+            f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL)
+            else "https://open.spotify.com"
+        )
+        await q.answer()
+        await _edit(q,
+            f"`{SEP_S}`\n"
+            "📱 *Nessun dispositivo trovato*\n"
+            f"`{SEP_S}`\n\n"
+            "Spotify non vede nessun dispositivo attivo.\n\n"
+            "✅ *Come fare:*\n"
+            "1️⃣ Apri l'app Spotify\n"
+            "2️⃣ Avvia manualmente un brano\n"
+            "3️⃣ Torna qui e premi ▶️\n\n"
+            "_Dopo la prima volta i controlli_\n"
+            "_funzioneranno automaticamente._",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎧 Apri Spotify", url=spotify_btn_url),
+            ],[
+                InlineKeyboardButton("🔄 Riprova ▶️", callback_data="play"),
+                InlineKeyboardButton("🏠 Menu",        callback_data="back"),
+            ]])
+        )
     else:
         log.error(f"[player] azione={action} status={status} res={res}")
         await q.answer(f"⚠️ Errore Spotify ({status}).", show_alert=True)
@@ -1888,48 +1916,49 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         page  = int(parts[2])
         await _edit_playlist_tracks(q, user, pl_id, page=page)
 
-    elif data.startswith("playpl:"):
-        uri = data.split(":", 1)[1]
-        parts = uri.split(":")
-        spotify_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
+    elif data.startswith("playpl:") or data.startswith("playtrack:"):
+        is_pl  = data.startswith("playpl:")
+        uri    = data.split(":", 1)[1]
+        parts  = uri.split(":")
+        sp_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
+        has_app = bool(user.get("has_app", -1) == 1)
+        open_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else sp_url
 
-        device_id = _get_device_id_optional(user)
-        # Manda con device_id se disponibile, altrimenti Spotify usa quello attivo
+        device_id   = _get_device_id_optional(user)
         params_play = {"device_id": device_id} if device_id else {}
-        res = sp_put(user, "/me/player/play",
-                     params=params_play,
-                     body={"context_uri": uri})
-        if res and res["_status"] in (200, 202, 204):
-            await q.answer("▶️ Playlist avviata!")
-        else:
-            await _edit(q, 
-                f"⚠️ Non riesco ad avviare la playlist.\n\n"
-                f"Prova ad aprirla: [Apri in Spotify]({spotify_url})",
+        body_play   = {"context_uri": uri} if is_pl else {"uris": [uri]}
+
+        res    = sp_put(user, "/me/player/play", params=params_play, body=body_play)
+        status = (res or {}).get("_status", 0)
+        log.info(f"[{'playpl' if is_pl else 'playtrack'}] uri={uri} device={device_id} status={status}")
+
+        if status in (200, 202, 204):
+            await q.answer("▶️ Avviato!" )
+        elif status == 404:
+            # Nessun device attivo → guida utente
+            await q.answer()
+            await _edit(q,
+                f"`{SEP_S}`\n"
+                "📱 *Nessun dispositivo trovato*\n"
+                f"`{SEP_S}`\n\n"
+                "Spotify non vede nessun dispositivo.\n\n"
+                "✅ *Come fare:*\n"
+                "1️⃣ Apri Spotify\n"
+                "2️⃣ Avvia un brano qualsiasi\n"
+                "3️⃣ Torna qui e ripremi il tasto\n\n"
+                "_Dopo la prima volta funziona_\n"
+                "_automaticamente._",
                 markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
+                    InlineKeyboardButton("🎧 Apri Spotify", url=open_url),
+                ],[
+                    InlineKeyboardButton("🔄 Riprova", callback_data=data),
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
                 ]])
             )
-
-    elif data.startswith("playtrack:"):
-        uri = data.split(":", 1)[1]
-        parts = uri.split(":")
-        spotify_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
-
-        device_id = _get_device_id_optional(user)
-        params_play = {"device_id": device_id} if device_id else {}
-        res = sp_put(user, "/me/player/play",
-                     params=params_play,
-                     body={"uris": [uri]})
-        if res and res["_status"] in (200, 202, 204):
-            await q.answer("▶️ Brano avviato!")
+        elif status == 403:
+            await q.answer("⚠️ Spotify non permette questa azione. Riconnetti Spotify.", show_alert=True)
         else:
-            await _edit(q, 
-                f"⚠️ Non riesco ad avviare il brano.\n\n"
-                f"Prova ad aprirlo: [Apri in Spotify]({spotify_url})",
-                markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists")
-                ]])
-            )
+            await q.answer(f"⚠️ Errore Spotify ({status}). Riprova.", show_alert=True)
 
     elif data == "disconnect":
         # Cancella solo il token — mantieni is_premium, has_app, setup_done
