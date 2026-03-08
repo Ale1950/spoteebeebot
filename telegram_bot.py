@@ -386,23 +386,54 @@ def open_spotify_redirect():
     body {{ background:#0e0b08; color:#e8a87c; font-family:-apple-system,sans-serif;
            display:flex; align-items:center; justify-content:center;
            min-height:100vh; margin:0; text-align:center; padding:20px; }}
-    .msg {{ font-size:18px; }}
-    .sub {{ font-size:13px; color:#888; margin-top:12px; }}
+    .msg {{ font-size:20px; margin-bottom:10px; }}
+    .sub {{ font-size:13px; color:#888; margin-top:14px; }}
     a {{ color:#c0392b; }}
   </style>
 </head>
 <body>
   <div>
     <div class="msg">🎧 Apertura Spotify…</div>
-    <div class="sub">Se l'app non si apre, <a href="{web_url}">apri la versione web</a>.</div>
+    <div class="sub">Se l'app non si apre entro 3 secondi,<br>
+      <a href="{web_url}">apri la versione web</a>.
+    </div>
   </div>
   <script>
-    // Tenta di aprire l'app Spotify
-    window.location.href = "{spotify_uri}";
-    // Fallback: se dopo 2s siamo ancora qui, vai al web
-    setTimeout(function() {{
-      window.location.href = "{web_url}";
-    }}, 2000);
+    var fallbackTimer = null;
+    var appOpened = false;
+
+    function openApp() {{
+      // Avvia il timer PRIMA di aprire l'app
+      fallbackTimer = setTimeout(function() {{
+        // Siamo ancora qui dopo 3s → app non installata, apri web
+        if (!appOpened) {{
+          window.location.href = "{web_url}";
+        }}
+      }}, 3000);
+
+      // Prova ad aprire l'app
+      window.location.href = "{spotify_uri}";
+    }}
+
+    // Se la pagina va in background = l'app si è aperta
+    document.addEventListener("visibilitychange", function() {{
+      if (document.hidden) {{
+        appOpened = true;
+        if (fallbackTimer) {{
+          clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }}
+      }}
+    }});
+
+    // pagehide = navigazione via (es. torna a Telegram)
+    window.addEventListener("pagehide", function() {{
+      appOpened = true;
+      if (fallbackTimer) {{ clearTimeout(fallbackTimer); }}
+    }});
+
+    // Avvia subito
+    openApp();
   </script>
 </body>
 </html>"""
@@ -1847,11 +1878,10 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     limit  = 6
     offset = page * limit
 
-    # Step 1: info playlist (nome, uri, totale)
+    # Step 1: info playlist (nome, uri, totale) — senza fields per massima compatibilità
     pl_data = sp_get(user, f"/playlists/{pl_id}",
-                     params={"fields": "name,uri,tracks.total"})
+                     params={"fields": "name,uri,tracks.total,id"})
     if not pl_data or pl_data.get("_err"):
-        # Fallback senza fields filter
         pl_data = sp_get(user, f"/playlists/{pl_id}")
 
     if not pl_data or pl_data.get("_err"):
@@ -1873,14 +1903,9 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     total   = (pl_data.get("tracks") or {}).get("total", 0)
     pages   = max(1, (total + limit - 1) // limit)
 
-    # Step 2: brani pagina corrente via /playlists/{id}/tracks con offset
+    # Step 2: brani pagina corrente — senza fields per massima compatibilità
     tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
-                         params={"limit": limit, "offset": offset,
-                                 "fields": "items(track(name,uri,duration_ms,artists,type))"})
-    if not tracks_data or tracks_data.get("_err"):
-        # Fallback senza fields
-        tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
-                             params={"limit": limit, "offset": offset})
+                         params={"limit": limit, "offset": offset})
 
     if not tracks_data or tracks_data.get("_err"):
         err_code = (tracks_data or {}).get("_err", "?")
