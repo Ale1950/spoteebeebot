@@ -1,14 +1,14 @@
 """
-telegram_bot.py v3.2 — Bot Telegram "Listen & Mine"
+telegram_bot.py v3.3 — Bot Telegram "Listen & Mine"
 ----------------------------------------------------
 Avvio:  python telegram_bot.py
 Dipendenze: pip install python-telegram-bot flask requests
 
-Novità v3.2:
-- FIX PREMIUM: Riconoscimento corretto stato Premium e visualizzazione brani playlist
-- FIX MINING: Mining parte anche per utenti Free quando Spotify riproduce
-- FIX ERROR 403: Permessi playlist risolti con refresh token e scope corretti
-- FIX DISPOSITIVI: Rilevamento dispositivi attivi migliorato
+Novità v3.3:
+- FIX MINING FREE: Mining funziona anche per utenti Free usando endpoint alternativi
+- FIX STATO: Visualizzazione corretta dello stato di riproduzione per Free
+- DOPPIO ENDPOINT: Prova /me/player/currently-playing, fallback su /me/player/recently-played
+- CACHE TRACCIA: Mantiene ultima traccia anche se API non risponde
 """
 
 import asyncio
@@ -173,6 +173,8 @@ def db_init():
             "has_app":            "INTEGER DEFAULT -1",
             "setup_done":         "INTEGER DEFAULT 0",
             "last_device_id":     "TEXT DEFAULT ''",
+            "last_track_time":    "INTEGER DEFAULT 0",
+            "last_track_id":      "TEXT DEFAULT ''",
         }
         for col, typedef in migrations.items():
             if col not in existing:
@@ -368,8 +370,51 @@ def sp_post(user: dict, path: str) -> dict | None:
         return {"_status": 500}
 
 # -------------------------------------------------------
-# FUNZIONI AGGIUNTIVE PER STATO PREMIUM E DISPOSITIVI
+# FUNZIONI PER UTENTI FREE (MINING CON RECENTLY PLAYED)
 # -------------------------------------------------------
+def get_current_track_free(user: dict) -> dict | None:
+    """
+    Per utenti Free: usa /me/player/recently-played per ottenere l'ultima traccia
+    e /me/player per vedere se c'è un dispositivo attivo
+    """
+    if not user or not user.get("access_token"):
+        return None
+    
+    # Prima controlla se c'è un dispositivo attivo
+    player = sp_get(user, "/me/player")
+    has_active_device = False
+    
+    if player and not player.get("_err") and not player.get("_204"):
+        device = player.get("device", {})
+        if device and device.get("is_active"):
+            has_active_device = True
+            log.info(f"[FREE] Dispositivo attivo trovato: {device.get('name')}")
+    
+    # Ottieni le ultime tracce ascoltate
+    recent = sp_get(user, "/me/player/recently-played", params={"limit": 1})
+    
+    if not recent or recent.get("_err"):
+        log.warning("[FREE] Impossibile ottenere recently-played")
+        return None
+    
+    items = recent.get("items", [])
+    if not items:
+        log.info("[FREE] Nessuna traccia recente")
+        return None
+    
+    item = items[0]
+    track = item.get("track", {})
+    played_at = item.get("played_at", "")
+    
+    # Se c'è un dispositivo attivo, considera come "in riproduzione"
+    # Altrimenti, considera come "ultima riproduzione"
+    return {
+        "item": track,
+        "is_playing": has_active_device,
+        "played_at": played_at,
+        "from_recent": True
+    }
+
 def check_premium_status(user: dict) -> bool:
     """Verifica se l'utente ha Spotify Premium e aggiorna il DB."""
     if not user or not user.get("access_token"):
@@ -822,61 +867,146 @@ def mining_monitor():
 
 def _poll_user(user: dict):
     tid  = user["telegram_id"]
+    is_premium = check_premium_status(user)
     
-    # Prima controlla se la musica sta suonando
-    data = sp_get(user, "/me/player/currently-playing",
-                  params={"additional_types": "track,episode"})
-
-    if data is None:
-        # Token scaduto, disattiva mining
-        db_set(tid, mining_active=0)
-        _ul = _user_lang.get(tid, "it")
-        _run_async(_send(tid, t("token_expired", _ul)))
-        return
-
-    # Verifica se c'è musica in riproduzione
-    is_playing = False
-    track_name = ""
-    artist_name = ""
+    # Per utenti Premium: usa endpoint standard
+    if is_premium:
+        data = sp_get(user, "/me/player/currently-playing",
+                     params={"additional_types": "track,episode"})
+        
+        if data is None:
+            db_set(tid, mining_active=0)
+            _ul = _user_lang.get(tid, "it")
+            _run_async(_send(tid, t("token_expired", _ul)))
+            return
+        
+        is_playing = False
+        track_name = ""
+        artist_name = ""
+        track_id = ""
+        
+        if data and not data.get("_204") and data.get("is_playing"):
+            is_playing = True
+            item = data.get("item") or {}
+            track_name = item.get("name", "")
+            artists = item.get("artists", [])
+            artist_name = ", ".join([a.get("name", "") for a in artists])
+            track_id = item.get("id", "")
+            track_label = f"{artist_name} — {track_name}" if track_name else "brano sconosciuto"
+            
+            # Aggiorna mining se c'è un nuovo brano
+            if track_label != user.get("last_track", ""):
+                db_set(tid, last_track=track_label, last_track_id=track_id, last_track_time=now_ts())
+                stats_increment(tid, sessions=1, tracks=1)
+                _session_start[tid] = now_ts()
+                
+                updated_user = db_get(tid)
+                now_playing_txt = (
+                    f"▶️  *{track_name}*\n"
+                    f"    {artist_name}\n"
+                    "`· · · · · · · · ·`\n"
+                    + mining_line_from_user(updated_user)
+                )
+                _run_async(_update_now_playing(tid, now_playing_txt))
+                _run_async(_update_menu_caption(tid, updated_user))
+        else:
+            # Nessuna musica in riproduzione
+            if user.get("last_track"):
+                db_set(tid, last_track="")
+                if tid in _session_start:
+                    mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
+                    stats_increment(tid, minutes=mins)
+                updated_user = db_get(tid)
+                stopped_txt = (
+                    "⏹️  *Nessuna riproduzione*\n"
+                    "`· · · · · · · · ·`\n"
+                    + mining_line_from_user(updated_user)
+                )
+                _run_async(_update_now_playing(tid, stopped_txt))
+                _run_async(_update_menu_caption(tid, updated_user))
     
-    if data and not data.get("_204") and data.get("is_playing"):
-        is_playing = True
-        item = data.get("item") or {}
+    # Per utenti Free: usa endpoint alternativo (recently-played)
+    else:
+        free_data = get_current_track_free(user)
+        
+        if not free_data:
+            # Nessun dato disponibile
+            if user.get("last_track"):
+                # Mantieni l'ultima traccia per un po' (timeout 2 minuti)
+                last_time = user.get("last_track_time", 0)
+                if now_ts() - last_time > 120:  # 2 minuti
+                    db_set(tid, last_track="")
+                    if tid in _session_start:
+                        mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
+                        stats_increment(tid, minutes=mins)
+                    updated_user = db_get(tid)
+                    stopped_txt = (
+                        "⏹️  *Nessuna riproduzione recente*\n"
+                        "`· · · · · · · · ·`\n"
+                        + mining_line_from_user(updated_user)
+                    )
+                    _run_async(_update_now_playing(tid, stopped_txt))
+                    _run_async(_update_menu_caption(tid, updated_user))
+            return
+        
+        item = free_data.get("item", {})
         track_name = item.get("name", "")
         artists = item.get("artists", [])
         artist_name = ", ".join([a.get("name", "") for a in artists])
+        track_id = item.get("id", "")
         track_label = f"{artist_name} — {track_name}" if track_name else "brano sconosciuto"
+        is_playing = free_data.get("is_playing", False)
+        
+        # Per Free, consideriamo "in riproduzione" se c'è un dispositivo attivo
+        # e l'ultima traccia è recente (meno di 30 secondi fa)
+        played_at = free_data.get("played_at", "")
+        is_recent = True
+        if played_at:
+            try:
+                played_time = datetime.fromisoformat(played_at.replace('Z', '+00:00'))
+                if (datetime.now() - played_time).total_seconds() < 30:
+                    is_recent = True
+                else:
+                    is_recent = False
+            except:
+                is_recent = False
         
         # Aggiorna mining se c'è un nuovo brano
         if track_label != user.get("last_track", ""):
-            db_set(tid, last_track=track_label)
+            # Nuova traccia rilevata
+            db_set(tid, last_track=track_label, last_track_id=track_id, last_track_time=now_ts())
             stats_increment(tid, sessions=1, tracks=1)
             _session_start[tid] = now_ts()
             
             updated_user = db_get(tid)
+            playing_indicator = "▶️" if is_playing and is_recent else "⏸️"
+            status_text = "IN ASCOLTO" if is_playing and is_recent else "ULTIMA TRACCIA"
             now_playing_txt = (
-                f"▶️  *{track_name}*\n"
+                f"{playing_indicator}  *{track_name}*\n"
                 f"    {artist_name}\n"
+                f"    `{status_text}`\n"
                 "`· · · · · · · · ·`\n"
                 + mining_line_from_user(updated_user)
             )
             _run_async(_update_now_playing(tid, now_playing_txt))
             _run_async(_update_menu_caption(tid, updated_user))
-    else:
-        # Nessuna musica in riproduzione
-        if user.get("last_track"):
-            db_set(tid, last_track="")
-            if tid in _session_start:
-                mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
-                stats_increment(tid, minutes=mins)
-            updated_user = db_get(tid)
-            stopped_txt = (
-                "⏹️  *Nessuna riproduzione*\n"
-                "`· · · · · · · · ·`\n"
-                + mining_line_from_user(updated_user)
-            )
-            _run_async(_update_now_playing(tid, stopped_txt))
-            _run_async(_update_menu_caption(tid, updated_user))
+        
+        # Se non c'è attività per 2 minuti, resetta
+        elif user.get("last_track") and not (is_playing and is_recent):
+            last_time = user.get("last_track_time", 0)
+            if now_ts() - last_time > 120:  # 2 minuti
+                db_set(tid, last_track="")
+                if tid in _session_start:
+                    mins = max(1, int((now_ts() - _session_start.pop(tid)) / 60))
+                    stats_increment(tid, minutes=mins)
+                updated_user = db_get(tid)
+                stopped_txt = (
+                    "⏹️  *Nessuna attività recente*\n"
+                    "`· · · · · · · · ·`\n"
+                    + mining_line_from_user(updated_user)
+                )
+                _run_async(_update_now_playing(tid, stopped_txt))
+                _run_async(_update_menu_caption(tid, updated_user))
 
 # -------------------------------------------------------
 # DAILY SUMMARY — ogni sera alle DAILY_SUMMARY_HOUR
@@ -945,11 +1075,11 @@ _I18N = {
         "ru": "✅ *SPOTIFY PREMIUM ПОДКЛЮЧЁН!*",
     },
     "connected_free": {
-        "it": "✅ *SPOTIFY FREE CONNESSO!*",
-        "en": "✅ *SPOTIFY FREE CONNECTED!*",
-        "es": "✅ *¡SPOTIFY FREE CONECTADO!*",
-        "fr": "✅ *SPOTIFY FREE CONNECTÉ!*",
-        "ru": "✅ *SPOTIFY FREE ПОДКЛЮЧЁН!*",
+        "it": "✅ *SPOTIFY FREE CONNESSO!*\n\n⛏️ *Modalità Mining con tracce recenti*",
+        "en": "✅ *SPOTIFY FREE CONNECTED!*\n\n⛏️ *Mining Mode with recent tracks*",
+        "es": "✅ *¡SPOTIFY FREE CONECTADO!*\n\n⛏️ *Modo Mining con pistas recientes*",
+        "fr": "✅ *SPOTIFY FREE CONNECTÉ!*\n\n⛏️ *Mode Mining avec pistes récentes*",
+        "ru": "✅ *SPOTIFY FREE ПОДКЛЮЧЁН!*\n\n⛏️ *Режим майнинга с последними треками*",
     },
     "mining_active": {
         "it": "⛏️ Mining parte automaticamente quando ascolti musica 🎵",
@@ -980,11 +1110,11 @@ _I18N = {
         "ru": "⚠️ *АККАУНТ НЕ PREMIUM*",
     },
     "not_premium_body": {
-        "it": "I controlli play/pause/next potrebbero essere limitati da Spotify su account Free.\n⛏️ *Mining funziona normalmente!*",
-        "en": "Play/pause/next controls may be limited by Spotify on Free accounts.\n⛏️ *Mining works normally!*",
-        "es": "Los controles de play/pausa/siguiente pueden estar limitados por Spotify en cuentas Free.\n⛏️ ¡*El mining funciona normalmente!*",
-        "fr": "Les contrôles play/pause/suivant peuvent être limités par Spotify sur les comptes Free.\n⛏️ *Le mining fonctionne normalement!*",
-        "ru": "Управление play/пауза/далее может быть ограничено Spotify на Free аккаунте.\n⛏️ *Майнинг работает нормально!*",
+        "it": "I controlli play/pause/next potrebbero essere limitati da Spotify su account Free.\n⛏️ *Mining funziona normalmente con tracce recenti!*",
+        "en": "Play/pause/next controls may be limited by Spotify on Free accounts.\n⛏️ *Mining works normally with recent tracks!*",
+        "es": "Los controles de play/pausa/siguiente pueden estar limitados por Spotify en cuentas Free.\n⛏️ ¡*El mining funciona normalmente con pistas recientes!*",
+        "fr": "Les contrôles play/pause/suivant peuvent être limités par Spotify sur les comptes Free.\n⛏️ *Le mining fonctionne normalement avec les pistes récentes!*",
+        "ru": "Управление play/пауза/далее может быть ограничено Spotify на Free аккаунте.\n⛏️ *Майнинг работает нормально с последними треками!*",
     },
     "no_auth_yet": {
         "it": "⏳ Autorizzazione non ancora ricevuta.\nAssicurati di aver premuto *Accetta* su Spotify.",
@@ -1091,6 +1221,13 @@ _I18N = {
         "fr": "❌ *Erreur de permission de playlist*\n\nVotre token Spotify n'a pas la permission de lire cette playlist.\n\n🔄 *Solution:* Reconnectez Spotify et assurez-vous d'accepter toutes les permissions.",
         "ru": "❌ *Ошибка прав доступа к плейлисту*\n\nВаш токен Spotify не имеет прав на чтение этого плейлиста.\n\n🔄 *Решение:* Переподключите Spotify и убедитесь, что вы приняли все разрешения.",
     },
+    "free_mining_mode": {
+        "it": "🆓 *Modalità Free*\nIl mining usa le tue tracce recenti",
+        "en": "🆓 *Free Mode*\nMining uses your recently played tracks",
+        "es": "🆓 *Modo Free*\nEl mining usa tus pistas recientes",
+        "fr": "🆓 *Mode Free*\nLe mining utilise vos pistes récentes",
+        "ru": "🆓 *Free режим*\nМайнинг использует ваши последние треки",
+    },
 }
 
 def _lang(telegram_lang: str | None) -> str:
@@ -1123,10 +1260,11 @@ def menu_row():
 def mining_line_from_user(user: dict | None) -> str:
     """Calcola mining_status_line leggendo user dal DB."""
     if not user:
-        return mining_status_line(False, False)
+        return mining_status_line(False, False, False)
     active     = bool(user.get("mining_active"))
     is_playing = bool(user.get("last_track", ""))   # last_track non vuoto = musica in play
-    return mining_status_line(active, is_playing)
+    is_premium = bool(user.get("is_premium", 0) == 1)
+    return mining_status_line(active, is_playing, is_premium)
 
 def firma() -> str:
     return "\n`                — Acki Jewels 💎`"
@@ -1142,17 +1280,21 @@ def hdr_main() -> str:
 def hdr_menu(user: dict | None = None) -> str:
     """Header menu: mostra brano+artista se in riproduzione, altrimenti titolo standard."""
     last = (user or {}).get("last_track", "") if user else ""
+    is_premium = bool(user and user.get("is_premium", 0) == 1)
+    
     if last and " — " in last:
         artist, track = last.split(" — ", 1)
+        mode = "⭐" if is_premium else "🆓"
         return (
             f"`{SEP}`\n"
-            f"▶️  *{track}*\n"
+            f"{mode}  *{track}*\n"
             f"🔵  {artist}\n"
             f"`{SEP}`"
         )
+    mode = "⭐ PREMIUM" if is_premium else "🆓 FREE"
     return (
         f"`{SEP}`\n"
-        "  🐝  *LISTEN & MINE*  ⛏️\n"
+        f"  🐝  *LISTEN & MINE*  {mode}\n"
         f"`{SEP}`"
     )
 
@@ -1173,17 +1315,20 @@ def hdr_playlist() -> str:
 def hdr_track() -> str:
     return f"`{SEP_S}`"
 
-def mining_status_line(active: bool, is_playing: bool = False) -> str:
+def mining_status_line(active: bool, is_playing: bool = False, is_premium: bool = False) -> str:
     """
     active    = utente ha abilitato il mining
     is_playing = musica in riproduzione in questo momento
+    is_premium = utente ha Premium
     Colori: 🔵 musica in play, 🔴 abilitato ma fermo, ⚫ disabilitato
     """
+    mode = "⭐" if is_premium else "🆓"
+    
     if active and is_playing:
-        return "🔵 *Mine Nackles:* `● IN ASCOLTO`  ⛏️"
+        return f"{mode} *Mine Nackles:* `● IN ASCOLTO`  ⛏️"
     if active:
-        return "🔴 *Mine Nackles:* `○ IN ATTESA`  ⛏️"
-    return "⚫ *Mine Nackles:* `○ DISABILITATO`"
+        return f"{mode} *Mine Nackles:* `○ IN ATTESA`  ⛏️"
+    return f"{mode} *Mine Nackles:* `○ DISABILITATO`"
 
 def progress_bar(pct: int) -> str:
     """Barra stile Obsidian Ember: blocchi pieni + vuoti."""
@@ -1390,14 +1535,15 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
             callback_data="mining_off" if mining else "mining_on"
         )])
 
-        # Controlli riproduzione — tutti gli utenti
-        rows.append([
-            InlineKeyboardButton("⏮",  callback_data="prev"),
-            InlineKeyboardButton("▶",  callback_data="play"),
-            InlineKeyboardButton("⏸",  callback_data="pause"),
-            InlineKeyboardButton("⏭",  callback_data="next"),
-        ])
+        # Controlli riproduzione — solo Premium
         if premium:
+            rows.append([
+                InlineKeyboardButton("⏮",  callback_data="prev"),
+                InlineKeyboardButton("▶",  callback_data="play"),
+                InlineKeyboardButton("⏸",  callback_data="pause"),
+                InlineKeyboardButton("⏭",  callback_data="next"),
+            ])
+            
             # Shuffle + Repeat — solo Premium
             shuffle_on  = bool(user and user.get("shuffle_on"))
             repeat_mode = (user or {}).get("repeat_mode", "off")
@@ -1412,6 +1558,14 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
                     "🔁 Repeat",
                     callback_data="repeat_toggle"
                 ),
+            ])
+        else:
+            # Per Free: mostra solo un messaggio che i controlli richiedono Premium
+            rows.append([
+                InlineKeyboardButton("⏮ (Premium)", callback_data="premium_needed"),
+                InlineKeyboardButton("▶ (Premium)", callback_data="premium_needed"),
+                InlineKeyboardButton("⏸ (Premium)", callback_data="premium_needed"),
+                InlineKeyboardButton("⏭ (Premium)", callback_data="premium_needed"),
             ])
 
         # Apri Spotify + Disconnetti (tutti)
@@ -1494,12 +1648,12 @@ def _onboard_no_premium_txt() -> str:
         f"`{SEP}`\n\n"
         "⛏️ *Mining works* with Free!\n"
         "The bot will track what you listen to\n"
-        "and count your Nackles.\n\n"
+        "using your *recently played tracks*.\n\n"
         "❌ *What won't work:*\n"
         "Play/Pause/Next/Prev controls\n"
         "(these require Premium)\n\n"
         "✅ *What works:*\n"
-        "Mining, Stats, Playlist view\n\n"
+        "Mining (with recent tracks), Stats, Playlist view\n\n"
         "_Upgrade to Premium anytime and_\n"
         "_press Reconnect to unlock all controls._\n\n"
         "🎵 Ready to connect Spotify?"
@@ -1888,7 +2042,7 @@ async def _play_uri(q, user: dict, uri: str, is_playlist: bool = True):
         spotify_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else "https://open.spotify.com"
         
         await _edit(q,
-            f"`{SEP_S}`\n"
+            f"`{SEP_S}`\n
             "📱 *Nessun dispositivo attivo*\n"
             f"`{SEP_S}`\n\n"
             "Apri Spotify e avvia un brano, poi riprova.",
@@ -2052,7 +2206,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "4️⃣  Come back here and press the button\n\n"
                 f"👉 [🎧 Authorize Spotify]({url})\n\n"
                 "_Player controls won't be available._\n"
-                "_Mining will track your listening!_"
+                "_Mining will track your listening using recent tracks!_"
                 f"{firma()}"
             )
         kb = InlineKeyboardMarkup([[
@@ -2148,7 +2302,7 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_upd = db_get(tid)
         premium  = bool(user_upd and user_upd.get("is_premium", 0) == 1)
         await _edit(q,
-            f"`{SEP}`\n"
+            f"`{SEP}`\n
             f"{t('disconnected', lang)}\n"
             f"`{SEP}`",
             markup=InlineKeyboardMarkup([[
@@ -2229,35 +2383,58 @@ async def _edit_status(q, user):
         await _edit(q, "❌ Non connesso. Usa /start.")
         return
 
-    data = sp_get(user, "/me/player/currently-playing",
-                  params={"additional_types": "track,episode"})
+    is_premium = check_premium_status(user)
+    
+    if is_premium:
+        data = sp_get(user, "/me/player/currently-playing",
+                     params={"additional_types": "track,episode"})
+    else:
+        data = get_current_track_free(user)
 
     if data is None:
         txt = "⚠️ Token scaduto. Usa /start."
-    elif data.get("_204") or not data.get("is_playing"):
+    elif data.get("_204") or (not data.get("is_playing") and not data.get("from_recent")):
         m   = "⛏️ Mine Nackles pronto — aspetta musica" if user.get("mining_active") else "⚫ Mine Nackles in pausa"
+        mode = "⭐" if is_premium else "🆓"
         txt = (
             f"`{SEP_S}`\n"
-            f"⏹ *Nessuna riproduzione*\n"
+            f"{mode} *Nessuna riproduzione*\n"
             f"`{SEP_S}`\n\n"
             f"{m}"
             f"{firma()}"
         )
     else:
-        item    = data.get("item") or {}
-        track   = item.get("name", "?")
-        artist  = ", ".join(a["name"] for a in item.get("artists", []))
-        album   = (item.get("album") or {}).get("name", "")
-        prog    = data.get("progress_ms", 0)
-        dur     = max(item.get("duration_ms", 1), 1)
-        pct     = int(prog / dur * 100)
-        bar     = progress_bar(pct)
-        m       = "⛏️ Mine Nackles `ATTIVO`" if user.get("mining_active") else "⚫ Mine Nackles `PAUSA`"
+        if is_premium:
+            item    = data.get("item") or {}
+            track   = item.get("name", "?")
+            artist  = ", ".join(a["name"] for a in item.get("artists", []))
+            album   = (item.get("album") or {}).get("name", "")
+            prog    = data.get("progress_ms", 0)
+            dur     = max(item.get("duration_ms", 1), 1)
+            pct     = int(prog / dur * 100)
+            bar     = progress_bar(pct)
+            m       = "⛏️ Mine Nackles `ATTIVO`" if user.get("mining_active") else "⚫ Mine Nackles `PAUSA`"
+            mode    = "⭐"
+            status_text = ""
+        else:
+            item    = data.get("item", {})
+            track   = item.get("name", "?")
+            artist  = ", ".join(a["name"] for a in item.get("artists", []))
+            album   = (item.get("album") or {}).get("name", "")
+            prog    = 0
+            dur     = max(item.get("duration_ms", 1), 1)
+            pct     = 0
+            bar     = progress_bar(0)
+            m       = "⛏️ Mine Nackles `ATTIVO (RECENT)`" if user.get("mining_active") else "⚫ Mine Nackles `PAUSA`"
+            mode    = "🆓"
+            status_text = "`(basato su tracce recenti)`"
+        
         txt     = (
             f"{hdr_track()}\n"
-            f"▶ *{track}*\n"
+            f"{mode} *{track}*\n"
             f"🔵 {artist}\n"
-            f"💿 _{album}_\n\n"
+            f"💿 _{album}_\n"
+            f"{status_text}\n\n"
             f"{bar} `{pct}%`\n"
             f"{hdr_track()}\n\n"
             f"{m}"
@@ -2430,7 +2607,7 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
 
     rows = []
 
-    # Bottone per avviare tutta la playlist
+    # Bottone per avviare tutta la playlist (solo Premium)
     if pl_uri and is_premium:
         rows.append([InlineKeyboardButton(
             f"▶️ AVVIA PLAYLIST COMPLETA",
@@ -2450,9 +2627,15 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         minutes = duration_ms // 60000
         seconds = (duration_ms % 60000) // 1000
         
+        # I brani possono essere riprodotti solo da Premium
+        if is_premium:
+            callback_data = f"playtrack:{track.get('uri')}"
+        else:
+            callback_data = "premium_needed"
+            
         rows.append([InlineKeyboardButton(
             f"▶️ {track_name} - {artists} [{minutes}:{seconds:02d}]",
-            callback_data=f"playtrack:{track.get('uri')}"
+            callback_data=callback_data
         )])
         track_count += 1
 
@@ -2479,7 +2662,7 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     start_idx = offset + 1
     end_idx = min(offset + track_count, total_tracks)
     
-    premium_status = "⭐ PREMIUM" if is_premium else "🆓 FREE"
+    premium_status = "⭐ PREMIUM" if is_premium else "🆓 FREE (solo visualizzazione)"
     
     await _edit(q,
         f"`{SEP}`\n"
@@ -2519,7 +2702,7 @@ def main():
     _tg_app.add_handler(CallbackQueryHandler(h_button))
 
     print("\n" + "="*50)
-    print("  SPOTEEBEEBOT v3.2 AVVIATO ✅")
+    print("  SPOTEEBEEBOT v3.3 AVVIATO ✅")
     print(f"  Cerca @SpoteeBeeBot su Telegram → /start")
     print(f"  Daily summary ogni giorno alle {DAILY_SUMMARY_HOUR}:00")
     print("="*50 + "\n")
