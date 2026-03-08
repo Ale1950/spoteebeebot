@@ -331,7 +331,13 @@ def sp_put(user: dict, path: str, params: dict = None, body=None) -> dict | None
         json=body,
         timeout=10,
     )
-    return {"_status": r.status_code}
+    try:
+        resp_body = r.json() if r.content else {}
+    except Exception:
+        resp_body = {"_raw": r.text}
+    if r.status_code >= 400:
+        log.error(f"sp_put {path} params={params} → {r.status_code}: {resp_body}")
+    return {"_status": r.status_code, "_body": resp_body}
 
 def sp_post(user: dict, path: str) -> dict | None:
     tok = valid_token(user)
@@ -1405,7 +1411,6 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if authed:
         user   = _sync_player_state(user)
         total  = stats_get_total(tid)
-        mining = bool(user and user.get("mining_active"))
 
         def fmt(m): return f"{m//60}h {m%60}min" if m >= 60 else f"{m} min"
 
@@ -1420,15 +1425,29 @@ async def h_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"{mining_line_from_user(user)}"
             f"{firma()}"
         )
+        kb  = main_kb(user)
+        mid = (user or {}).get("menu_msg_id", 0) or 0
+        if mid:
+            # Riusa il messaggio menu esistente (foto rimane come sfondo)
+            try:
+                await _tg_app.bot.edit_message_caption(
+                    chat_id=tid, message_id=mid,
+                    caption=txt, parse_mode="Markdown", reply_markup=kb
+                )
+                return
+            except Exception:
+                pass  # Messaggio cancellato → manda nuovo
+        # Manda nuovo messaggio con foto
         if os.path.exists(ACKI_IMAGE):
             with open(ACKI_IMAGE, "rb") as img:
                 sent = await update.message.reply_photo(
                     photo=img, caption=txt,
-                    parse_mode="Markdown", reply_markup=main_kb(user)
+                    parse_mode="Markdown", reply_markup=kb
                 )
                 db_set(tid, menu_msg_id=sent.message_id)
         else:
-            await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
+            sent = await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
+            db_set(tid, menu_msg_id=sent.message_id)
         return
 
     # ── Onboarding: step 1 — chiedi Premium ──
@@ -1447,22 +1466,32 @@ async def h_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid  = update.effective_user.id
     user = db_get(tid)
     user = _sync_player_state(user)
-    txt = (
+    txt  = (
         f"{hdr_menu(user)}\n\n"
         f"{mining_line_from_user(user)}\n"
         f"`▸ scegli un'opzione`"
     )
+    kb  = main_kb(user)
+    mid = (user or {}).get("menu_msg_id", 0) or 0
+    if mid:
+        try:
+            await _tg_app.bot.edit_message_caption(
+                chat_id=tid, message_id=mid,
+                caption=txt, parse_mode="Markdown", reply_markup=kb
+            )
+            return
+        except Exception:
+            pass
     if os.path.exists(ACKI_IMAGE):
         with open(ACKI_IMAGE, "rb") as img:
             sent = await update.message.reply_photo(
-                photo=img,
-                caption=txt,
-                parse_mode="Markdown",
-                reply_markup=main_kb(user)
+                photo=img, caption=txt,
+                parse_mode="Markdown", reply_markup=kb
             )
             db_set(tid, menu_msg_id=sent.message_id)
     else:
-        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=main_kb(user))
+        sent = await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
+        db_set(tid, menu_msg_id=sent.message_id)
 
 async def h_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tid  = update.effective_user.id
@@ -1634,26 +1663,32 @@ async def _toggle_shuffle(q, user: dict):
     new_state = not current
     state_str = "true" if new_state else "false"
 
-    device_id = _get_device_id_optional(user)
-    if not device_id:
-        await q.answer("⚠️ Apri Spotify e avvia un brano prima di usare Shuffle.", show_alert=True)
-        return
+    device_id  = _get_device_id_optional(user)
+    params_sh  = {"state": state_str}
+    if device_id:
+        params_sh["device_id"] = device_id
 
-    res    = sp_put(user, "/me/player/shuffle",
-                    params={"state": state_str, "device_id": device_id})
+    res    = sp_put(user, "/me/player/shuffle", params=params_sh)
     status = (res or {}).get("_status", 0)
-    log.info(f"Shuffle toggle → state={state_str} device={device_id} result={status}")
+    body   = (res or {}).get("_body", {})
+    log.info(f"[shuffle] state={state_str} device={device_id or 'none'} status={status} body={body}")
 
     if status in (200, 202, 204):
         db_set(tid, shuffle_on=1 if new_state else 0)
         updated_user = db_get(tid)
-        label = "🔀 Shuffle ON" if new_state else "🔀 Shuffle OFF"
+        label = "🔀 Shuffle ON ●" if new_state else "🔀 Shuffle OFF"
         await q.answer(label, show_alert=False)
         await _edit(q, markup=main_kb(updated_user))
     elif status == 403:
-        await q.answer("⚠️ Serve Spotify Premium per Shuffle.", show_alert=True)
+        err_reason = str(body.get("error", {}).get("reason", "")).lower()
+        if "premium" in err_reason or "premium" in str(body).lower():
+            await q.answer("🔒 Shuffle richiede Spotify Premium.", show_alert=True)
+        else:
+            await q.answer("⚠️ Shuffle: avvia Spotify e premi play prima.", show_alert=True)
+    elif status == 404:
+        await q.answer("⚠️ Apri Spotify, avvia un brano, poi riprova.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore Spotify ({status})", show_alert=True)
+        await q.answer(f"⚠️ Errore shuffle ({status}). Riprova.", show_alert=True)
 
 
 async def _toggle_repeat(q, user: dict):
@@ -1683,18 +1718,24 @@ async def _toggle_repeat(q, user: dict):
     status = (res or {}).get("_status", 0)
     log.info(f"Repeat toggle → mode={new_mode} (was {real_repeat}) device={device_id} status={status}")
 
+    body_r = (res or {}).get("_body", {})
+    log.info(f"[repeat] mode={new_mode} device={device_id or 'none'} status={status} body={body_r}")
+
     if status in (200, 202, 204):
         db_set(tid, repeat_mode=new_mode)
         updated_user = db_get(tid)
         await q.answer(labels.get(new_mode, "✅"), show_alert=False)
         await _edit(q, markup=main_kb(updated_user))
     elif status == 403:
-        # 403 = Premium required per repeat (Spotify API)
-        await q.answer("🔒 Repeat richiede Spotify Premium.", show_alert=True)
+        err_reason = str(body_r.get("error", {}).get("reason", "")).lower()
+        if "premium" in err_reason or "premium" in str(body_r).lower():
+            await q.answer("🔒 Repeat richiede Spotify Premium.", show_alert=True)
+        else:
+            await q.answer("⚠️ Repeat: avvia Spotify e premi play prima.", show_alert=True)
     elif status == 404:
-        await q.answer("⚠️ Apri Spotify e avvia un brano, poi riprova.", show_alert=True)
+        await q.answer("⚠️ Apri Spotify, avvia un brano, poi riprova.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore Spotify ({status}) — riprova.", show_alert=True)
+        await q.answer(f"⚠️ Errore repeat ({status}). Riprova.", show_alert=True)
 
 
 async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1918,22 +1959,26 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("playpl:") or data.startswith("playtrack:"):
         is_pl  = data.startswith("playpl:")
-        uri    = data.split(":", 1)[1]
-        parts  = uri.split(":")
-        sp_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
-        has_app = bool(user.get("has_app", -1) == 1)
+        # data = "playpl:spotify:playlist:ID" → uri = "spotify:playlist:ID"
+        uri    = data[len("playpl:"):] if is_pl else data[len("playtrack:"):]
+        parts  = uri.split(":")   # ["spotify","playlist","ID"]
+        sp_url = (f"https://open.spotify.com/{parts[1]}/{parts[2]}"
+                  if len(parts) >= 3 else "https://open.spotify.com")
+        has_app  = bool(user.get("has_app", -1) == 1)
         open_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else sp_url
 
         device_id   = _get_device_id_optional(user)
         params_play = {"device_id": device_id} if device_id else {}
         body_play   = {"context_uri": uri} if is_pl else {"uris": [uri]}
 
+        log.info(f"[{'playpl' if is_pl else 'playtrack'}] uri={uri!r} device={device_id!r} body={body_play}")
         res    = sp_put(user, "/me/player/play", params=params_play, body=body_play)
         status = (res or {}).get("_status", 0)
-        log.info(f"[{'playpl' if is_pl else 'playtrack'}] uri={uri} device={device_id} status={status}")
+        body_r = (res or {}).get("_body", {})
+        log.info(f"[{'playpl' if is_pl else 'playtrack'}] status={status} spotify_body={body_r}")
 
         if status in (200, 202, 204):
-            await q.answer("▶️ Avviato!" )
+            await q.answer("▶️ Avviato!")
         elif status == 404:
             # Nessun device attivo → guida utente
             await q.answer()
@@ -1943,9 +1988,8 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"`{SEP_S}`\n\n"
                 "Spotify non vede nessun dispositivo.\n\n"
                 "✅ *Come fare:*\n"
-                "1️⃣ Apri Spotify\n"
-                "2️⃣ Avvia un brano qualsiasi\n"
-                "3️⃣ Torna qui e ripremi il tasto\n\n"
+                "1️⃣ Apri Spotify e avvia un brano\n"
+                "2️⃣ Torna qui e ripremi\n\n"
                 "_Dopo la prima volta funziona_\n"
                 "_automaticamente._",
                 markup=InlineKeyboardMarkup([[
@@ -1956,9 +2000,16 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 ]])
             )
         elif status == 403:
-            await q.answer("⚠️ Spotify non permette questa azione. Riconnetti Spotify.", show_alert=True)
+            err_msg = str(body_r.get("error", {}).get("message", "")).lower()
+            if "premium" in err_msg or "premium" in str(body_r).lower():
+                await q.answer("🔒 Serve Premium per avviare brani on-demand.", show_alert=True)
+            else:
+                await q.answer("⚠️ Errore permessi. Premi Riconnetti Spotify.", show_alert=True)
+        elif status == 0:
+            await q.answer("⚠️ Connessione Spotify persa. Riconnetti.", show_alert=True)
         else:
-            await q.answer(f"⚠️ Errore Spotify ({status}). Riprova.", show_alert=True)
+            reason = str(body_r.get("error", {}).get("message", f"errore {status}"))
+            await q.answer(f"⚠️ {reason[:60]}", show_alert=True)
 
     elif data == "disconnect":
         # Cancella solo il token — mantieni is_premium, has_app, setup_done
