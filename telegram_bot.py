@@ -9,6 +9,7 @@ Novità v3.3:
 - FIX STATO: Visualizzazione corretta dello stato di riproduzione per Free
 - DOPPIO ENDPOINT: Prova /me/player/currently-playing, fallback su /me/player/recently-played
 - CACHE TRACCIA: Mantiene ultima traccia anche se API non risponde
+- FIX F-STRING: Corretti tutti gli errori di sintassi nelle f-string
 """
 
 import asyncio
@@ -680,9 +681,9 @@ def oauth_cb():
 
     if premium_ok:
         confirm_msg = (
-            f"`{SEP}`\n"
+            f"{SEP}\n"
             f"{t('connected_premium', lang_cb)}\n"
-            f"`{SEP}`\n\n"
+            f"{SEP}\n\n"
             f"👤 *{sp_name}* ⭐ Premium\n\n"
             f"{t('mining_active', lang_cb)}\n"
             f"{t('controls_enabled', lang_cb)}\n\n"
@@ -691,9 +692,9 @@ def oauth_cb():
     elif user_claimed_premium and not premium_ok:
         # Aveva detto Premium ma non lo è
         confirm_msg = (
-            f"`{SEP}`\n"
+            f"{SEP}\n"
             f"{t('not_premium_warning', lang_cb)}\n"
-            f"`{SEP}`\n\n"
+            f"{SEP}\n\n"
             f"👤 *{sp_name or 'unknown'}*  (plan: *{product}*)\n\n"
             f"{t('not_premium_body', lang_cb)}\n\n"
             f"{t('use_menu', lang_cb)}"
@@ -701,9 +702,9 @@ def oauth_cb():
     else:
         # Free — mining funziona, controlli player attivi
         confirm_msg = (
-            f"`{SEP}`\n"
+            f"{SEP}\n"
             f"{t('connected_free', lang_cb)}\n"
-            f"`{SEP}`\n\n"
+            f"{SEP}\n\n"
             f"👤 *{sp_name or 'unknown'}*  (Free)\n\n"
             f"{t('mining_active', lang_cb)}\n"
             f"{t('not_premium_body', lang_cb)}\n\n"
@@ -1035,9 +1036,9 @@ def daily_summary_scheduler():
 
                 name = user.get("first_name") or "utente"
                 msg  = (
-                    f"`{SEP}`\n"
+                    f"{SEP}\n"
                     f"🌙 *ACKI NACKI · REPORT SERALE*\n"
-                    f"`{SEP}`\n\n"
+                    f"{SEP}\n\n"
                     f"👤 *{name}* — ottimo oggi! 🔥\n\n"
                     f"`▸ MINE NACKLES OGGI`\n"
                     f"⛏️  Sessioni:  *{today['sessions']}*\n"
@@ -1271,10 +1272,10 @@ def firma() -> str:
 
 def hdr_main() -> str:
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         "    🐝  *A C K I   N A C K I*\n"
         "    ⛏️  *L I S T E N  &  M I N E*\n"
-        f"`{SEP}`"
+        f"{SEP}"
     )
 
 def hdr_menu(user: dict | None = None) -> str:
@@ -1286,34 +1287,34 @@ def hdr_menu(user: dict | None = None) -> str:
         artist, track = last.split(" — ", 1)
         mode = "⭐" if is_premium else "🆓"
         return (
-            f"`{SEP}`\n"
+            f"{SEP}\n"
             f"{mode}  *{track}*\n"
             f"🔵  {artist}\n"
-            f"`{SEP}`"
+            f"{SEP}"
         )
     mode = "⭐ PREMIUM" if is_premium else "🆓 FREE"
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         f"  🐝  *LISTEN & MINE*  {mode}\n"
-        f"`{SEP}`"
+        f"{SEP}"
     )
 
 def hdr_stats() -> str:
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         "  📊  *MINE NACKLES · STATS*\n"
-        f"`{SEP}`"
+        f"{SEP}"
     )
 
 def hdr_playlist() -> str:
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         "  🎼  *LE TUE PLAYLIST*\n"
-        f"`{SEP}`"
+        f"{SEP}"
     )
 
 def hdr_track() -> str:
-    return f"`{SEP_S}`"
+    return f"{SEP_S}"
 
 def mining_status_line(active: bool, is_playing: bool = False, is_premium: bool = False) -> str:
     """
@@ -1589,10 +1590,10 @@ def main_kb(user: dict | None) -> InlineKeyboardMarkup:
 # ── Onboarding text and keyboards ──
 def _onboard_welcome_txt(name: str) -> str:
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         "    🐝  *A C K I   N A C K I*\n"
         "    ⛏️  *L I S T E N  &  M I N E*\n"
-        f"`{SEP}`\n\n"
+        f"{SEP}\n\n"
         f"👋 Hey *{name}*! Welcome!\n\n"
         "`▸ BEFORE WE START`\n"
         "I need to know a couple of things\n"
@@ -1609,9 +1610,9 @@ def _onboard_premium_kb() -> InlineKeyboardMarkup:
 
 def _onboard_app_txt() -> str:
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         "    🐝  *SETUP — STEP 2/2*\n"
-        f"`{SEP}`\n\n"
+        f"{SEP}\n\n"
         "📱 *Do you have the Spotify app*\n"
         "*installed on your phone?*\n\n"
         "_The app is needed so you can_\n"
@@ -1627,9 +1628,9 @@ def _onboard_app_kb() -> InlineKeyboardMarkup:
 
 def _onboard_install_txt() -> str:
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         "    📲  *INSTALL SPOTIFY FIRST*\n"
-        f"`{SEP}`\n\n"
+        f"{SEP}\n\n"
         "You need the Spotify app to use\n"
         "Listen & Mine.\n\n"
         "📥 Download it here:\n"
@@ -1643,9 +1644,9 @@ def _onboard_install_txt() -> str:
 def _onboard_no_premium_txt() -> str:
     """Messaggio per utenti Free — mining funziona, controlli no."""
     return (
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         "    ⚠️  *SPOTIFY FREE — LIMITED MODE*\n"
-        f"`{SEP}`\n\n"
+        f"{SEP}\n\n"
         "⛏️ *Mining works* with Free!\n"
         "The bot will track what you listen to\n"
         "using your *recently played tracks*.\n\n"
@@ -1900,9 +1901,9 @@ async def _player_action(q, user: dict, action: str):
         )
         await q.answer()
         await _edit(q,
-            f"`{SEP_S}`\n"
+            f"{SEP_S}\n"
             "📱 *Nessun dispositivo trovato*\n"
-            f"`{SEP_S}`\n\n"
+            f"{SEP_S}\n\n"
             "Spotify non vede nessun dispositivo attivo.\n\n"
             "✅ *Come fare:*\n"
             "1️⃣ Apri l'app Spotify\n"
@@ -1944,9 +1945,9 @@ async def _toggle_shuffle(q, user: dict):
         spotify_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else "https://open.spotify.com"
         
         await _edit(q,
-            f"`{SEP_S}`\n"
+            f"{SEP_S}\n"
             "📱 *Nessun dispositivo attivo*\n"
-            f"`{SEP_S}`\n\n"
+            f"{SEP_S}\n\n"
             "Apri Spotify e avvia un brano, poi riprova.",
             markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎧 Apri Spotify", url=spotify_url),
@@ -2003,9 +2004,9 @@ async def _toggle_repeat(q, user: dict):
         spotify_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else "https://open.spotify.com"
         
         await _edit(q,
-            f"`{SEP_S}`\n"
+            f"{SEP_S}\n"
             "📱 *Nessun dispositivo attivo*\n"
-            f"`{SEP_S}`\n\n"
+            f"{SEP_S}\n\n"
             "Apri Spotify e avvia un brano, poi riprova.",
             markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎧 Apri Spotify", url=spotify_url),
@@ -2042,9 +2043,9 @@ async def _play_uri(q, user: dict, uri: str, is_playlist: bool = True):
         spotify_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else "https://open.spotify.com"
         
         await _edit(q,
-            f"`{SEP_S}`\n
+            f"{SEP_S}\n"
             "📱 *Nessun dispositivo attivo*\n"
-            f"`{SEP_S}`\n\n"
+            f"{SEP_S}\n\n"
             "Apri Spotify e avvia un brano, poi riprova.",
             markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎧 Apri Spotify", url=spotify_url),
@@ -2113,9 +2114,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         premium = bool(user and user.get("is_premium", 0) == 1)
         if premium:
             txt = (
-                f"`{SEP}`\n"
+                f"{SEP}\n"
                 "    ✅  *SETUP COMPLETE!*\n"
-                f"`{SEP}`\n\n"
+                f"{SEP}\n\n"
                 "🎧 *Premium* + 📱 *App installed*\n"
                 "You're all set for the full experience!\n\n"
                 "⛏️ Mining + 🎛️ Player controls\n"
@@ -2143,9 +2144,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "premium_needed":
         await _edit(q,
-            f"`{SEP}`\n"
+            f"{SEP}\n"
             "🔒 *PREMIUM REQUIRED*\n"
-            f"`{SEP}`\n\n"
+            f"{SEP}\n\n"
             "Player controls (play, pause, next,\n"
             "prev, shuffle, repeat) require\n"
             "*Spotify Premium*.\n\n"
@@ -2177,9 +2178,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         premium = bool(user and user.get("is_premium", 0) == 1)
         if premium:
             txt = (
-                f"`{SEP}`\n"
+                f"{SEP}\n"
                 "🔐 *CONNECT SPOTIFY PREMIUM*\n"
-                f"`{SEP}`\n\n"
+                f"{SEP}\n\n"
                 "`▸ FOLLOW THESE STEPS`\n"
                 "1️⃣  Open the *Spotify app* on your phone\n"
                 "2️⃣  Make sure you're logged in with\n"
@@ -2195,9 +2196,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         else:
             txt = (
-                f"`{SEP}`\n"
+                f"{SEP}\n"
                 "🔐 *CONNECT SPOTIFY FREE*\n"
-                f"`{SEP}`\n\n"
+                f"{SEP}\n\n"
                 "⛏️ Mining mode — limited controls\n\n"
                 "`▸ FOLLOW THESE STEPS`\n"
                 "1️⃣  Open the *Spotify app* on your phone\n"
@@ -2302,9 +2303,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_upd = db_get(tid)
         premium  = bool(user_upd and user_upd.get("is_premium", 0) == 1)
         await _edit(q,
-            f"`{SEP}`\n
+            f"{SEP}\n"
             f"{t('disconnected', lang)}\n"
-            f"`{SEP}`",
+            f"{SEP}",
             markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(t("reconnect_btn", lang), callback_data="connect")
             ]])
@@ -2329,9 +2330,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         premium_r = bool(user_r and user_r.get("is_premium", 0) == 1)
         if premium_r:
             txt = (
-                f"`{SEP}`\n"
+                f"{SEP}\n"
                 "🔐 *RICONNETTI SPOTIFY PREMIUM*\n"
-                f"`{SEP}`\n\n"
+                f"{SEP}\n\n"
                 "`▸ SEGUI QUESTI PASSI`\n"
                 "1️⃣  Apri l'*app Spotify* sul telefono\n"
                 "2️⃣  Assicurati di essere loggato con\n"
@@ -2344,9 +2345,9 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         else:
             txt = (
-                f"`{SEP}`\n"
+                f"{SEP}\n"
                 "🔐 *RICONNETTI SPOTIFY*\n"
-                f"`{SEP}`\n\n"
+                f"{SEP}\n\n"
                 "1️⃣  Apri l'*app Spotify* sul telefono\n"
                 "2️⃣  Premi il link qui sotto\n"
                 "3️⃣  Premi *Accetta*\n"
@@ -2397,9 +2398,9 @@ async def _edit_status(q, user):
         m   = "⛏️ Mine Nackles pronto — aspetta musica" if user.get("mining_active") else "⚫ Mine Nackles in pausa"
         mode = "⭐" if is_premium else "🆓"
         txt = (
-            f"`{SEP_S}`\n"
+            f"{SEP_S}\n"
             f"{mode} *Nessuna riproduzione*\n"
-            f"`{SEP_S}`\n\n"
+            f"{SEP_S}\n\n"
             f"{m}"
             f"{firma()}"
         )
@@ -2525,9 +2526,9 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         
         if str(err_code) == "403":
             await _edit(q,
-                f"`{SEP}`\n"
+                f"{SEP}\n"
                 "🔒 *Permessi playlist insufficienti*\n"
-                f"`{SEP}`\n\n"
+                f"{SEP}\n\n"
                 "Il token Spotify non ha i permessi per leggere questa playlist.\n\n"
                 "🔑 *Soluzione:*\n"
                 "1. Premi il bottone *Riconnetti Spotify*\n"
@@ -2570,9 +2571,9 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         
         if str(err_code) == "403":
             await _edit(q,
-                f"`{SEP}`\n"
+                f"{SEP}\n"
                 "🔒 *Permessi playlist insufficienti*\n"
-                f"`{SEP}`\n\n"
+                f"{SEP}\n\n"
                 "Il token Spotify non ha i permessi per leggere i brani di questa playlist.\n\n"
                 "🔑 *Soluzione:* Riconnetti Spotify e accetta tutti i permessi.",
                 markup=InlineKeyboardMarkup([[
@@ -2665,9 +2666,9 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     premium_status = "⭐ PREMIUM" if is_premium else "🆓 FREE (solo visualizzazione)"
     
     await _edit(q,
-        f"`{SEP}`\n"
+        f"{SEP}\n"
         f"📋 *{pl_name}*\n"
-        f"`{SEP}`\n\n"
+        f"{SEP}\n\n"
         f"_{premium_status}_\n"
         f"_Brani {start_idx}-{end_idx} di {total_tracks}_\n\n"
         f"Seleziona un brano per riprodurlo:",
