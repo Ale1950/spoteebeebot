@@ -1,16 +1,14 @@
 """
-telegram_bot.py v3.0 — Bot Telegram "Listen & Mine"
+telegram_bot.py v3.1 — Bot Telegram "Listen & Mine"
 ----------------------------------------------------
 Avvio:  python telegram_bot.py
 Dipendenze: pip install python-telegram-bot flask requests
 
-Novità v3.0:
-- ZERO messaggi extra: shuffle/repeat/now_playing aggiornano solo bottoni e caption
-- Repeat/Shuffle sincronizzati con stato REALE di Spotify
-- Premium check corretto (aggiunto scope user-read-private)
-- Playlist tracks via /playlists/{id}/tracks con paginazione reale
-- Apri Spotify con universal link (apre app se installata)
-- Auto-refresh titolo brano nella caption menu foto
+Novità v3.1:
+- Fix riconoscimento Premium e dispositivi attivi
+- Fix visualizzazione brani nelle playlist
+- Gestione errori migliorata per shuffle/repeat
+- Verifica stato Premium in tempo reale
 """
 
 import asyncio
@@ -349,6 +347,86 @@ def sp_post(user: dict, path: str) -> dict | None:
         timeout=10,
     )
     return {"_status": r.status_code}
+
+# -------------------------------------------------------
+# FUNZIONI AGGIUNTIVE PER STATO PREMIUM E DISPOSITIVI
+# -------------------------------------------------------
+def check_premium_status(user: dict) -> bool:
+    """Verifica se l'utente ha Spotify Premium e aggiorna il DB."""
+    if not user or not user.get("access_token"):
+        return False
+    
+    profile = sp_get(user, "/me")
+    if profile and not profile.get("_err"):
+        product = (profile.get("product") or "").lower()
+        is_premium = product == "premium"
+        
+        # Aggiorna il DB
+        db_set(user["telegram_id"], is_premium=1 if is_premium else 0)
+        
+        if is_premium:
+            log.info(f"✅ Utente {user['telegram_id']} confermato Premium")
+        else:
+            log.info(f"⚠️ Utente {user['telegram_id']} è Free (product: {product})")
+        
+        return is_premium
+    
+    return False
+
+def _get_device_id_optional(user: dict) -> str | None:
+    """
+    Ritorna il device_id se disponibile, altrimenti None.
+    Versione migliorata con più tentativi e logging dettagliato.
+    """
+    if not user or not user.get("access_token"):
+        return None
+        
+    tid = user["telegram_id"]
+    
+    # Primo tentativo: /me/player per il dispositivo attivo
+    player = sp_get(user, "/me/player")
+    
+    if player and not player.get("_err") and not player.get("_204"):
+        dev = player.get("device") or {}
+        did = dev.get("id")
+        if did:
+            log.info(f"[device] Trovato dispositivo attivo: {dev.get('name')} (ID: {did})")
+            # Aggiorna lo stato premium se non lo è già
+            if dev.get("type") and not user.get("is_premium"):
+                # Verifica se è premium in base al tipo di dispositivo
+                is_premium = dev.get("type") != "unknown"
+                if is_premium:
+                    db_set(tid, is_premium=1)
+            return did
+    
+    # Secondo tentativo: lista di tutti i dispositivi
+    devices_data = sp_get(user, "/me/player/devices")
+    devices = (devices_data or {}).get("devices", [])
+    
+    if devices:
+        # Cerca dispositivo attivo prima
+        active_devices = [d for d in devices if d.get("is_active")]
+        if active_devices:
+            chosen = active_devices[0]
+            did = chosen.get("id")
+            log.info(f"[device] Trovato dispositivo attivo da lista: {chosen.get('name')}")
+            return did
+        
+        # Se nessun dispositivo attivo, prendi il primo disponibile
+        chosen = devices[0]
+        did = chosen.get("id")
+        log.info(f"[device] Nessun dispositivo attivo, uso: {chosen.get('name')}")
+        
+        # Tenta di trasferire la riproduzione a questo dispositivo
+        if did:
+            transfer_res = sp_put(user, "/me/player", body={"device_ids": [did], "play": False})
+            if transfer_res and transfer_res.get("_status") in (200, 202, 204):
+                log.info(f"[device] Trasferimento a {chosen.get('name')} riuscito")
+                time.sleep(1)  # Aspetta che il trasferimento sia completato
+            return did
+    
+    log.warning("[device] Nessun dispositivo trovato")
+    return None
 
 # -------------------------------------------------------
 # OAUTH SERVER
@@ -1094,43 +1172,6 @@ def _sync_player_state(user: dict) -> dict:
         return db_get(tid)
     return user
 
-def _get_device_id_optional(user: dict) -> str | None:
-    """
-    Ritorna il device_id se disponibile, oppure None.
-    None è OK — Spotify usa il device attivo automaticamente.
-    Usato solo per shuffle/repeat che richiedono device_id esplicito.
-    """
-    # 1. /me/player — device che sta suonando ora
-    player = sp_get(user, "/me/player")
-    log.info(f"[device] /me/player → _204={bool(player and player.get('_204'))} "
-             f"_err={player.get('_err') if player else 'None'} "
-             f"device={(player or {}).get('device', {}).get('name', '-') if player else '-'}")
-    if player and not player.get("_err") and not player.get("_204"):
-        dev = player.get("device") or {}
-        did = dev.get("id")
-        if did:
-            log.info(f"[device] trovato da /me/player: {dev.get('name')} active={dev.get('is_active')}")
-            return did
-
-    # 2. /me/player/devices — tutti i device registrati
-    devices_data = sp_get(user, "/me/player/devices")
-    devices = (devices_data or {}).get("devices", [])
-    log.info(f"[device] /me/player/devices → {len(devices)} device(s): "
-             f"{[d.get('name') for d in devices]}")
-    if devices:
-        active = [d for d in devices if d.get("is_active")]
-        chosen = (active[0] if active else devices[0])
-        did = chosen.get("id")
-        log.info(f"[device] scelto: {chosen.get('name')} active={bool(active)}")
-        if not active and did:
-            log.info(f"[device] trasferisco a {did}")
-            sp_put(user, "/me/player", body={"device_ids": [did], "play": False})
-            time.sleep(1.5)
-        return did
-
-    log.warning("[device] nessun device trovato")
-    return None
-
 async def _send(tid: int, text: str, markup=None):
     if not _tg_app:
         return
@@ -1692,47 +1733,63 @@ async def _player_action(q, user: dict, action: str):
 
 
 async def _toggle_shuffle(q, user: dict):
-    """Attiva/disattiva shuffle. Richiede brano in play su Spotify."""
-    tid       = user["telegram_id"]
-    current   = bool(user.get("shuffle_on"))
+    """Attiva/disattiva shuffle con gestione errori migliorata."""
+    tid = user["telegram_id"]
+    
+    # Verifica Premium prima di procedere
+    if not check_premium_status(user):
+        await q.answer("🔒 Shuffle richiede Spotify Premium", show_alert=True)
+        return
+    
+    current = bool(user.get("shuffle_on"))
     new_state = not current
     state_str = "true" if new_state else "false"
 
-    device_id  = _get_device_id_optional(user)
-    params_sh  = {"state": state_str}
-    if device_id:
-        params_sh["device_id"] = device_id
-    log.info(f"[shuffle] state={state_str} device={device_id or 'none (Spotify auto)'}")
+    device_id = _get_device_id_optional(user)
+    
+    if not device_id:
+        # Mostra messaggio per aprire Spotify
+        await q.answer()
+        has_app = bool(user.get("has_app", -1) == 1)
+        spotify_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else "https://open.spotify.com"
+        
+        await _edit(q,
+            f"`{SEP_S}`\n"
+            "📱 *Nessun dispositivo attivo*\n"
+            f"`{SEP_S}`\n\n"
+            "Apri Spotify e avvia un brano, poi riprova.",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎧 Apri Spotify", url=spotify_url),
+            ],[
+                InlineKeyboardButton("🔄 Riprova Shuffle", callback_data="shuffle_toggle"),
+                InlineKeyboardButton("🏠 Menu", callback_data="back"),
+            ]])
+        )
+        return
 
-    res    = sp_put(user, "/me/player/shuffle", params=params_sh)
+    params_sh = {"state": state_str, "device_id": device_id}
+    
+    res = sp_put(user, "/me/player/shuffle", params=params_sh)
     status = (res or {}).get("_status", 0)
-    body   = (res or {}).get("_body", {})
-    reason = str(body.get("error", {}).get("reason", "")).upper()
-    log.info(f"[shuffle] state={state_str} device={device_id} status={status} reason={reason}")
-
+    
     if status in (200, 202, 204):
         db_set(tid, shuffle_on=1 if new_state else 0)
         updated_user = db_get(tid)
         label = "🔀 Shuffle ON" if new_state else "🔀 Shuffle OFF"
         await q.answer(label, show_alert=False)
         await _edit(q, markup=main_kb(updated_user))
-    elif status == 403:
-        if "PREMIUM" in reason:
-            await q.answer("🔒 Shuffle richiede Spotify Premium.", show_alert=True)
-        else:
-            await q.answer("⚠️ Shuffle non disponibile. Avvia una playlist su Spotify.", show_alert=True)
-    elif status == 404:
-        if "NO_ACTIVE_DEVICE" in reason:
-            await q.answer("📱 Apri Spotify, avvia un brano, poi usa Shuffle.", show_alert=True)
-        else:
-            await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore Spotify ({status}). Riprova.", show_alert=True)
+        await q.answer("⚠️ Errore. Apri Spotify e riprova.", show_alert=True)
 
 
 async def _toggle_repeat(q, user: dict):
     """Cicla modalità repeat sincronizzata con Spotify reale."""
     tid = user["telegram_id"]
+    
+    # Verifica Premium prima di procedere
+    if not check_premium_status(user):
+        await q.answer("🔒 Repeat richiede Spotify Premium", show_alert=True)
+        return
 
     # Leggi lo stato REALE da Spotify
     player = sp_get(user, "/me/player")
@@ -1749,34 +1806,75 @@ async def _toggle_repeat(q, user: dict):
     labels   = {"off": "🔁 Repeat OFF", "context": "🔁 Repeat Playlist", "track": "🔂 Repeat 1 Brano"}
 
     device_id = _get_device_id_optional(user)
-    params_rp = {"state": new_mode}
-    if device_id:
-        params_rp["device_id"] = device_id
-    log.info(f"[repeat] mode={new_mode} device={device_id or 'none (Spotify auto)'}")
+    
+    if not device_id:
+        await q.answer()
+        has_app = bool(user.get("has_app", -1) == 1)
+        spotify_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else "https://open.spotify.com"
+        
+        await _edit(q,
+            f"`{SEP_S}`\n"
+            "📱 *Nessun dispositivo attivo*\n"
+            f"`{SEP_S}`\n\n"
+            "Apri Spotify e avvia un brano, poi riprova.",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎧 Apri Spotify", url=spotify_url),
+            ],[
+                InlineKeyboardButton("🔄 Riprova Repeat", callback_data="repeat_toggle"),
+                InlineKeyboardButton("🏠 Menu", callback_data="back"),
+            ]])
+        )
+        return
+
+    params_rp = {"state": new_mode, "device_id": device_id}
+    log.info(f"[repeat] mode={new_mode} device={device_id}")
 
     res    = sp_put(user, "/me/player/repeat", params=params_rp)
     status = (res or {}).get("_status", 0)
-    body_r = (res or {}).get("_body", {})
-    reason = str(body_r.get("error", {}).get("reason", "")).upper()
-    log.info(f"[repeat] mode={new_mode} device={device_id} status={status} reason={reason}")
 
     if status in (200, 202, 204):
         db_set(tid, repeat_mode=new_mode)
         updated_user = db_get(tid)
         await q.answer(labels.get(new_mode, "✅"), show_alert=False)
         await _edit(q, markup=main_kb(updated_user))
-    elif status == 403:
-        if "PREMIUM" in reason:
-            await q.answer("🔒 Repeat richiede Spotify Premium.", show_alert=True)
-        else:
-            await q.answer("⚠️ Repeat non disponibile. Avvia una playlist su Spotify.", show_alert=True)
-    elif status == 404:
-        if "NO_ACTIVE_DEVICE" in reason:
-            await q.answer("📱 Apri Spotify, avvia un brano, poi usa Repeat.", show_alert=True)
-        else:
-            await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore Spotify ({status}). Riprova.", show_alert=True)
+        await q.answer("⚠️ Errore. Apri Spotify e riprova.", show_alert=True)
+
+
+async def _play_uri(q, user: dict, uri: str, is_playlist: bool = True):
+    """Helper per riprodurre URI Spotify."""
+    device_id = _get_device_id_optional(user)
+    
+    if not device_id:
+        # Mostra messaggio per aprire Spotify
+        await q.answer()
+        has_app = bool(user.get("has_app", -1) == 1)
+        spotify_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else "https://open.spotify.com"
+        
+        await _edit(q,
+            f"`{SEP_S}`\n"
+            "📱 *Nessun dispositivo attivo*\n"
+            f"`{SEP_S}`\n\n"
+            "Apri Spotify e avvia un brano, poi riprova.",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎧 Apri Spotify", url=spotify_url),
+            ],[
+                InlineKeyboardButton("🔄 Riprova", callback_data=q.data),
+                InlineKeyboardButton("🏠 Menu", callback_data="back"),
+            ]])
+        )
+        return
+    
+    params = {"device_id": device_id}
+    body = {"context_uri": uri} if is_playlist else {"uris": [uri]}
+    
+    res = sp_put(user, "/me/player/play", params=params, body=body)
+    status = (res or {}).get("_status", 0)
+    
+    if status in (200, 202, 204):
+        await q.answer("▶️ Riproduzione avviata!", show_alert=False)
+    else:
+        await q.answer("⚠️ Errore durante la riproduzione", show_alert=True)
 
 
 async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1795,6 +1893,14 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if data in ("play", "pause", "next", "prev"):
         await _player_action(q, user, data)
+        return
+    if data.startswith("playpl:"):
+        uri = data[7:]  # rimuovi "playpl:"
+        await _play_uri(q, user, uri, is_playlist=True)
+        return
+    if data.startswith("playtrack:"):
+        uri = data[10:]  # rimuovi "playtrack:"
+        await _play_uri(q, user, uri, is_playlist=False)
         return
 
     # Tutti gli altri: answer vuoto subito
@@ -1998,60 +2104,6 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         page  = int(parts[2])
         await _edit_playlist_tracks(q, user, pl_id, page=page)
 
-    elif data.startswith("playpl:") or data.startswith("playtrack:"):
-        is_pl  = data.startswith("playpl:")
-        # data = "playpl:spotify:playlist:ID" → uri = "spotify:playlist:ID"
-        uri    = data[len("playpl:"):] if is_pl else data[len("playtrack:"):]
-        parts  = uri.split(":")   # ["spotify","playlist","ID"]
-        sp_url = (f"https://open.spotify.com/{parts[1]}/{parts[2]}"
-                  if len(parts) >= 3 else "https://open.spotify.com")
-        has_app  = bool(user.get("has_app", -1) == 1)
-        open_url = f"{PUBLIC_URL}/open-spotify" if (has_app and PUBLIC_URL) else sp_url
-
-        device_id   = _get_device_id_optional(user)
-        params_play = {"device_id": device_id} if device_id else {}
-        body_play   = {"context_uri": uri} if is_pl else {"uris": [uri]}
-
-        log.info(f"[{'playpl' if is_pl else 'playtrack'}] uri={uri!r} device={device_id!r} body={body_play}")
-        res    = sp_put(user, "/me/player/play", params=params_play, body=body_play)
-        status = (res or {}).get("_status", 0)
-        body_r = (res or {}).get("_body", {})
-        log.info(f"[{'playpl' if is_pl else 'playtrack'}] status={status} spotify_body={body_r}")
-
-        if status in (200, 202, 204):
-            await q.answer("▶️ Avviato!")
-        elif status == 404:
-            # Nessun device attivo → guida utente
-            await q.answer()
-            await _edit(q,
-                f"`{SEP_S}`\n"
-                "📱 *Nessun dispositivo trovato*\n"
-                f"`{SEP_S}`\n\n"
-                "Spotify non vede nessun dispositivo.\n\n"
-                "✅ *Come fare:*\n"
-                "1️⃣ Apri Spotify e avvia un brano\n"
-                "2️⃣ Torna qui e ripremi\n\n"
-                "_Dopo la prima volta funziona_\n"
-                "_automaticamente._",
-                markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🎧 Apri Spotify", url=open_url),
-                ],[
-                    InlineKeyboardButton("🔄 Riprova", callback_data=data),
-                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-                ]])
-            )
-        elif status == 403:
-            err_msg = str(body_r.get("error", {}).get("message", "")).lower()
-            if "premium" in err_msg or "premium" in str(body_r).lower():
-                await q.answer("🔒 Serve Premium per avviare brani on-demand.", show_alert=True)
-            else:
-                await q.answer("⚠️ Errore permessi. Premi Riconnetti Spotify.", show_alert=True)
-        elif status == 0:
-            await q.answer("⚠️ Connessione Spotify persa. Riconnetti.", show_alert=True)
-        else:
-            reason = str(body_r.get("error", {}).get("message", f"errore {status}"))
-            await q.answer(f"⚠️ {reason[:60]}", show_alert=True)
-
     elif data == "disconnect":
         # Cancella solo il token — mantieni is_premium, has_app, setup_done
         db_set(tid, access_token=None, refresh_token=None,
@@ -2238,139 +2290,137 @@ async def _edit_playlists(q, user, page=0):
     )
 
 # -------------------------------------------------------
-# Helper: brani di una playlist
+# Helper: brani di una playlist (VERSIONE CORRETTA)
 # -------------------------------------------------------
 async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
     if not user:
         await _edit(q, "❌ Non connesso.")
         return
 
-    limit  = 6
+    limit = 6
     offset = page * limit
-
-    # Step 1: info playlist (nome, uri, totale) — senza fields per massima compatibilità
-    pl_data = sp_get(user, f"/playlists/{pl_id}",
-                     params={"fields": "name,uri,tracks.total,id"})
-    if not pl_data or pl_data.get("_err"):
-        pl_data = sp_get(user, f"/playlists/{pl_id}")
-
+    
+    # Ottieni informazioni sulla playlist
+    pl_data = sp_get(user, f"/playlists/{pl_id}")
+    
     if not pl_data or pl_data.get("_err"):
         err_code = (pl_data or {}).get("_err", "?")
-        body_info = str((pl_data or {}).get("_body", ""))[:120]
-        log.error(f"Playlist info error: pl_id={pl_id} err={err_code} body={body_info}")
-        error_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
-            InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-        ],[
-            InlineKeyboardButton("🔌 Riconnetti", callback_data="reconnect"),
-            InlineKeyboardButton("🏠 Menu",       callback_data="back"),
-        ]])
-        await _edit(q, f"⚠️ Errore caricamento playlist (`{err_code}`).\n`{body_info}`", markup=error_kb)
-        return
-
-    pl_name = pl_data.get("name", "Playlist")
-    pl_uri  = pl_data.get("uri", "")
-    total   = (pl_data.get("tracks") or {}).get("total", 0)
-    pages   = max(1, (total + limit - 1) // limit)
-
-    # Step 2: brani pagina corrente — senza fields per massima compatibilità
-    tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks",
-                         params={"limit": limit, "offset": offset})
-
-    if not tracks_data or tracks_data.get("_err"):
-        err_code = (tracks_data or {}).get("_err", "?")
-        body_info = str((tracks_data or {}).get("_body", ""))[:120]
-        log.error(f"Tracks error: pl_id={pl_id} page={page} err={err_code} body={body_info}")
-        error_kb_403 = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔄 Riconnetti Spotify", callback_data="reconnect"),
-        ],[
-            InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-            InlineKeyboardButton("🏠 Menu",     callback_data="back"),
-        ]])
-        error_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
-            InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-        ],[
-            InlineKeyboardButton("🔌 Riconnetti", callback_data="reconnect"),
-            InlineKeyboardButton("🏠 Menu",       callback_data="back"),
-        ]])
+        error_msg = str((pl_data or {}).get("_body", ""))[:120]
+        
         if str(err_code) == "403":
             await _edit(q,
                 f"`{SEP}`\n"
-                "🔒 *Permessi mancanti*\n"
+                "🔒 *Permessi insufficienti*\n"
                 f"`{SEP}`\n\n"
-                "Token senza permesso lettura brani.\n\n"
-                "✅ Premi *Riconnetti Spotify*\n"
-                "_Basta premere Accetta su Spotify_",
+                "Il token non ha i permessi per leggere i brani.\n\n"
+                "🔑 *Soluzione:* Riconnetti Spotify e assicurati di\n"
+                "accettare tutti i permessi richiesti.",
                 markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔄 Riconnetti Spotify", callback_data="reconnect"),
                 ],[
                     InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-                    InlineKeyboardButton("🏠 Menu",     callback_data="back"),
+                    InlineKeyboardButton("🏠 Menu", callback_data="back"),
                 ]])
             )
         else:
             await _edit(q,
-                f"⚠️ Errore brani (`{err_code}`).\n`{body_info}`",
-                markup=error_kb
+                f"⚠️ Errore caricamento playlist: {error_msg}",
+                markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Riprova", callback_data=f"pl:{pl_id}"),
+                    InlineKeyboardButton("🔙 Indietro", callback_data="back_playlists"),
+                ]])
             )
         return
 
+    pl_name = pl_data.get("name", "Playlist")
+    pl_uri = pl_data.get("uri", "")
+    total_tracks = (pl_data.get("tracks") or {}).get("total", 0)
+    pages = max(1, (total_tracks + limit - 1) // limit)
+
+    # Ottieni i brani della playlist - usa l'endpoint corretto
+    tracks_data = sp_get(user, f"/playlists/{pl_id}/tracks", 
+                        params={
+                            "limit": limit, 
+                            "offset": offset,
+                            "market": "from_token"
+                        })
+
+    if not tracks_data or tracks_data.get("_err"):
+        err_code = (tracks_data or {}).get("_err", "?")
+        await _edit(q,
+            f"⚠️ Errore caricamento brani (codice {err_code})",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Riprova", callback_data=f"pl:{pl_id}"),
+                InlineKeyboardButton("🔙 Indietro", callback_data="back_playlists"),
+            ]])
+        )
+        return
+
     items = tracks_data.get("items", [])
-    log.info(f"Playlist '{pl_name}': total={total} page={page} items_loaded={len(items)}")
+    
+    if not items:
+        await _edit(q,
+            f"📋 *{pl_name}*\n\n"
+            "Questa playlist non contiene brani.",
+            markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+                InlineKeyboardButton("🏠 Menu", callback_data="back"),
+            ]])
+        )
+        return
 
     rows = []
 
-    # Bottone avvia tutta la playlist
+    # Bottone per avviare tutta la playlist
     if pl_uri:
         rows.append([InlineKeyboardButton(
-            f"▶️ Avvia tutta «{pl_name[:22]}»",
+            f"▶️ AVVIA PLAYLIST COMPLETA",
             callback_data=f"playpl:{pl_uri}"
         )])
 
-    # Brani della pagina corrente
-    count = 0
+    # Aggiungi i brani
     for item in items:
-        track = item.get("track") if item else None
-        if not track or not track.get("uri") or track.get("type") == "episode":
+        track = item.get("track")
+        if not track or not track.get("uri"):
             continue
-        name   = track.get("name", "?")[:26]
-        artist = (track.get("artists") or [{}])[0].get("name", "")[:16]
-        uri    = track.get("uri", "")
-        dur_ms = track.get("duration_ms", 0)
-        mins   = dur_ms // 60000
-        secs   = (dur_ms % 60000) // 1000
+            
+        track_name = track.get("name", "Sconosciuto")[:25]
+        artists = ", ".join([a.get("name", "") for a in track.get("artists", [])])[:20]
+        duration_ms = track.get("duration_ms", 0)
+        minutes = duration_ms // 60000
+        seconds = (duration_ms % 60000) // 1000
+        
         rows.append([InlineKeyboardButton(
-            f"▶️ {name} — {artist}  {mins}:{secs:02d}",
-            callback_data=f"playtrack:{uri}"
+            f"▶️ {track_name} - {artists} [{minutes}:{seconds:02d}]",
+            callback_data=f"playtrack:{track.get('uri')}"
         )])
-        count += 1
-
-    if count == 0:
-        rows.append([InlineKeyboardButton("(Nessun brano in questa pagina)", callback_data="noop")])
 
     # Navigazione pagine
-    nav = []
+    nav_buttons = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Prec", callback_data=f"pltracks:{pl_id}:{page-1}"))
-    nav.append(InlineKeyboardButton(f"  {page+1} / {pages}  ", callback_data="noop"))
+        nav_buttons.append(InlineKeyboardButton("◀️ Prec", callback_data=f"pltracks:{pl_id}:{page-1}"))
+    nav_buttons.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="noop"))
     if page < pages - 1:
-        nav.append(InlineKeyboardButton("Succ ▶️", callback_data=f"pltracks:{pl_id}:{page+1}"))
-    if len(nav) > 1:
-        rows.append(nav)
+        nav_buttons.append(InlineKeyboardButton("Succ ▶️", callback_data=f"pltracks:{pl_id}:{page+1}"))
+    
+    if len(nav_buttons) > 1:
+        rows.append(nav_buttons)
 
+    # Pulsanti di navigazione aggiuntivi
     rows.append([
         InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
-        InlineKeyboardButton("🏠 Menu",     callback_data="back"),
+        InlineKeyboardButton("🏠 Menu", callback_data="back"),
     ])
 
-    shown_start = offset + 1
-    shown_end   = min(offset + count, total)
+    start_idx = offset + 1
+    end_idx = min(offset + len(items), total_tracks)
+    
     await _edit(q,
-        f"{hdr_playlist()}\n\n"
+        f"`{SEP}`\n"
         f"📋 *{pl_name}*\n"
-        f"_{shown_start}–{shown_end} di {total} brani_\n\n"
-        f"Premi ▶️ per avviare:",
+        f"`{SEP}`\n\n"
+        f"_Brani {start_idx}-{end_idx} di {total_tracks}_\n\n"
+        f"Seleziona un brano per riprodurlo:",
         markup=InlineKeyboardMarkup(rows)
     )
 
@@ -2402,7 +2452,7 @@ def main():
     _tg_app.add_handler(CallbackQueryHandler(h_button))
 
     print("\n" + "="*50)
-    print("  SPOTEEBEEBOT v2.0 AVVIATO ✅")
+    print("  SPOTEEBEEBOT v3.1 AVVIATO ✅")
     print(f"  Cerca @SpoteeBeeBot su Telegram → /start")
     print(f"  Daily summary ogni giorno alle {DAILY_SUMMARY_HOUR}:00")
     print("="*50 + "\n")
