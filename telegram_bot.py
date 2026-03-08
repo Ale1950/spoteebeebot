@@ -773,6 +773,50 @@ def _sync_player_state(user: dict) -> dict:
         return db_get(tid)
     return user
 
+def _get_active_device(user: dict, retries: int = 3, delay: float = 1.2) -> str | None:
+    """
+    Cerca il device attivo su Spotify con retry.
+    Strategia:
+      1. Controlla /me/player (playback corrente) → device diretto
+      2. Controlla /me/player/devices → lista completa
+      3. Se trovato ma inattivo → trasferisci e aspetta
+    Ritorna device_id oppure None se proprio non trovato.
+    """
+    for attempt in range(retries):
+        # 1. Prova /me/player — più affidabile su mobile
+        player = sp_get(user, "/me/player")
+        if player and not player.get("_err") and not player.get("_204"):
+            dev = player.get("device") or {}
+            did = dev.get("id")
+            if did:
+                log.info(f"Device trovato via /me/player: {dev.get('name')} id={did}")
+                return did
+
+        # 2. Prova /me/player/devices
+        devices_data = sp_get(user, "/me/player/devices")
+        devices = (devices_data or {}).get("devices", [])
+        if devices:
+            # Preferisci device attivo
+            active = [d for d in devices if d.get("is_active")]
+            chosen = (active[0] if active else devices[0])
+            did = chosen.get("id")
+            if did:
+                log.info(f"Device trovato via /devices (active={bool(active)}): {chosen.get('name')} id={did}")
+                if not active:
+                    # Trasferisci playback e aspetta che Spotify attivi
+                    log.info(f"Trasferisco playback a {did}")
+                    sp_put(user, "/me/player",
+                           body={"device_ids": [did], "play": False})
+                    time.sleep(1.5)  # Spotify ha bisogno di ~1s per il trasferimento
+                return did
+
+        if attempt < retries - 1:
+            log.info(f"Device non trovato, retry {attempt+1}/{retries}...")
+            time.sleep(delay)
+
+    log.warning("Nessun device Spotify trovato dopo tutti i retry.")
+    return None
+
 async def _send(tid: int, text: str, markup=None):
     if not _tg_app:
         return
@@ -1131,37 +1175,29 @@ async def _send_stats(tid: int, message, edit=False):
 # Helper: azioni player con controllo device
 # -------------------------------------------------------
 async def _player_action(q, user: dict, action: str):
-    """Esegue un'azione player. Se device disponibile ma non attivo, lo attiva."""
+    """Esegue un'azione player con retry automatico per trovare il device."""
     tid = user["telegram_id"]
 
-    # Controlla device disponibili
-    devices_data = sp_get(user, "/me/player/devices")
-    devices = (devices_data or {}).get("devices", [])
-    active  = [d for d in devices if d.get("is_active")]
+    # Cerca device con retry (gestisce app in background, device inattivi, ecc.)
+    device_id = _get_active_device(user, retries=3, delay=1.2)
 
-    if not devices:
+    if not device_id:
         await q.answer()
-        await _edit(q, 
-            "📱 *Spotify non è aperto su nessun dispositivo.*\n\n"
-            "Apri l'app Spotify sul telefono o PC\n"
-            "(basta aprirla, non serve avviare musica),\n"
-            "poi torna qui e premi ▶️\n\n"
-            "👉 [Apri Spotify](https://open.spotify.com)",
+        has_app = (user or {}).get("has_app", -1)
+        if has_app == 0:
+            hint = "Installa l'app Spotify sul telefono o PC per usare i controlli."
+        else:
+            hint = "Apri l'app Spotify sul telefono (basta aprirla), poi ripremi ▶️"
+        await _edit(q,
+            f"📱 *Spotify non risponde.*\n\n"
+            f"{hint}\n\n"
+            "_Attendi 3-5 secondi dopo aver aperto Spotify_",
             markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔄 Riprova", callback_data="play"),
-                InlineKeyboardButton("🔙 Menu",    callback_data="back"),
+                InlineKeyboardButton("🏠 Menu",    callback_data="back"),
             ]])
         )
         return
-
-    # Usa il device attivo, oppure trasferisci il playback al primo disponibile
-    device_id = (active[0] if active else devices[0])["id"]
-
-    # Se nessun device è attivo, trasferisci il playback prima di tutto
-    if not active:
-        log.info(f"Nessun device attivo, trasferisco a {device_id}")
-        sp_put(user, "/me/player", body={"device_ids": [device_id], "play": False})
-        time.sleep(0.3)  # aspetta che Spotify attivi il device
 
     if action == "play":
         # Prima prova: riprendi ciò che c'era in play
@@ -1242,14 +1278,11 @@ async def _toggle_shuffle(q, user: dict):
     new_state = not current
     state_str = "true" if new_state else "false"
 
-    devices_data = sp_get(user, "/me/player/devices")
-    devices = [(d or {}) for d in (devices_data or {}).get("devices", [])]
-    active  = [d for d in devices if d.get("is_active")]
-    if not devices:
-        await q.answer("⚠️ Apri Spotify prima di usare shuffle.", show_alert=True)
+    device_id = _get_active_device(user)
+    if not device_id:
+        await q.answer("⚠️ Apri Spotify prima di usare Shuffle.", show_alert=True)
         return
 
-    device_id = (active[0] if active else devices[0])["id"]
     res    = sp_put(user, "/me/player/shuffle",
                     params={"state": state_str, "device_id": device_id})
     status = (res or {}).get("_status", 0)
@@ -1285,14 +1318,11 @@ async def _toggle_repeat(q, user: dict):
     new_mode = cycle.get(real_repeat, "off")
     labels   = {"off": "🔁 Repeat OFF", "context": "🔁 Repeat Playlist", "track": "🔂 Repeat 1 Brano"}
 
-    devices_data = sp_get(user, "/me/player/devices")
-    devices = [(d or {}) for d in (devices_data or {}).get("devices", [])]
-    active  = [d for d in devices if d.get("is_active")]
-    if not devices:
-        await q.answer("⚠️ Apri Spotify prima di usare repeat.", show_alert=True)
+    device_id = _get_active_device(user)
+    if not device_id:
+        await q.answer("⚠️ Apri Spotify prima di usare Repeat.", show_alert=True)
         return
 
-    device_id = (active[0] if active else devices[0])["id"]
     res    = sp_put(user, "/me/player/repeat",
                     params={"state": new_mode, "device_id": device_id})
     status = (res or {}).get("_status", 0)
@@ -1531,14 +1561,11 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parts = uri.split(":")
         spotify_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
 
-        devices_data = sp_get(user, "/me/player/devices")
-        devices = (devices_data or {}).get("devices", [])
-        active  = [d for d in devices if d.get("is_active")]
-
-        if not devices:
+        device_id = _get_active_device(user)
+        if not device_id:
             await _edit(q,
-                "📱 *Spotify non è aperto.*\n\n"
-                "Apri l'app Spotify, poi torna qui e riprova.",
+                "📱 *Spotify non risponde.*\n\n"
+                "Apri l'app Spotify, attendi 3 secondi, poi riprova.",
                 markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
                     InlineKeyboardButton("🏠 Menu",     callback_data="back"),
@@ -1546,10 +1573,6 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        device_id = (active[0] if active else devices[0])["id"]
-        if not active:
-            sp_put(user, "/me/player", body={"device_ids": [device_id], "play": False})
-            time.sleep(0.3)
         res = sp_put(user, "/me/player/play",
                      params={"device_id": device_id},
                      body={"context_uri": uri})
@@ -1569,14 +1592,11 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parts = uri.split(":")
         spotify_url = f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 else "https://open.spotify.com"
 
-        devices_data = sp_get(user, "/me/player/devices")
-        devices = (devices_data or {}).get("devices", [])
-        active  = [d for d in devices if d.get("is_active")]
-
-        if not devices:
+        device_id = _get_active_device(user)
+        if not device_id:
             await _edit(q,
-                "📱 *Spotify non è aperto.*\n\n"
-                "Apri l'app Spotify, poi torna qui e riprova.",
+                "📱 *Spotify non risponde.*\n\n"
+                "Apri l'app Spotify, attendi 3 secondi, poi riprova.",
                 markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
                     InlineKeyboardButton("🏠 Menu",     callback_data="back"),
@@ -1584,10 +1604,6 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        device_id = (active[0] if active else devices[0])["id"]
-        if not active:
-            sp_put(user, "/me/player", body={"device_ids": [device_id], "play": False})
-            time.sleep(0.3)
         res = sp_put(user, "/me/player/play",
                      params={"device_id": device_id},
                      body={"uris": [uri]})
@@ -1603,14 +1619,18 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
 
     elif data == "disconnect":
+        # Cancella solo il token — mantieni is_premium, has_app, setup_done
         db_set(tid, access_token=None, refresh_token=None,
                mining_active=0, last_track="", shuffle_on=0, repeat_mode="off",
                now_playing_msg_id=0)
+        user_upd = db_get(tid)
+        premium  = bool(user_upd and user_upd.get("is_premium", 0) == 1)
+        tip = "🎧 Riconnetti il tuo account *Premium*." if premium else "🎧 Riconnetti il tuo account Spotify."
         await _edit(q,
             f"`{SEP}`\n"
             "🔌 *Disconnesso da Spotify*\n"
             f"`{SEP}`\n\n"
-            "Usa il bottone per riconnetterti.",
+            f"{tip}",
             markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎵 Connetti Spotify", callback_data="connect")
             ]])
@@ -1631,18 +1651,37 @@ async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "show_dialog": "true",
         }
         url = SPOTIFY_AUTH_URL + "?" + _urlp.urlencode(params)
-        txt = (
-            f"`{SEP}`\n"
-            "🔐 *RECONNECT SPOTIFY*\n"
-            f"`{SEP}`\n\n"
-            "Authorize again with the link below.\n"
-            "Your Premium status will be verified.\n\n"
-            f"👉 [🎧 Authorize Spotify]({url})\n\n"
-            "⚠️ _Make sure you use the right account._"
-            f"{firma()}"
-        )
+        user_r   = db_get(tid)
+        premium_r = bool(user_r and user_r.get("is_premium", 0) == 1)
+        if premium_r:
+            txt = (
+                f"`{SEP}`\n"
+                "🔐 *RICONNETTI SPOTIFY PREMIUM*\n"
+                f"`{SEP}`\n\n"
+                "`▸ SEGUI QUESTI PASSI`\n"
+                "1️⃣  Apri l'*app Spotify* sul telefono\n"
+                "2️⃣  Assicurati di essere loggato con\n"
+                "   il tuo account *Premium*\n"
+                "3️⃣  Premi il link qui sotto\n"
+                "4️⃣  Premi *Accetta*\n"
+                "5️⃣  Torna qui e premi il bottone\n\n"
+                f"👉 [🎧 Autorizza Spotify Premium]({url})"
+                f"{firma()}"
+            )
+        else:
+            txt = (
+                f"`{SEP}`\n"
+                "🔐 *RICONNETTI SPOTIFY*\n"
+                f"`{SEP}`\n\n"
+                "1️⃣  Apri l'*app Spotify* sul telefono\n"
+                "2️⃣  Premi il link qui sotto\n"
+                "3️⃣  Premi *Accetta*\n"
+                "4️⃣  Torna qui e premi il bottone\n\n"
+                f"👉 [🎧 Autorizza Spotify]({url})"
+                f"{firma()}"
+            )
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("💎 Done, check!", callback_data="check_auth")
+            InlineKeyboardButton("💎 Ho autorizzato, controlla!", callback_data="check_auth")
         ]])
         await _edit(q, txt, markup=kb)
 
