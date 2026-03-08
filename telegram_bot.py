@@ -1175,7 +1175,19 @@ async def _edit(q, txt: str = "", markup=None):
                 )
             return
         except Exception as e:
-            log.warning(f"_edit foto mid={mid}: {e} — creo nuovo")
+            err_str = str(e)
+            log.warning(f"_edit foto mid={mid}: {e}")
+            # 400 Bad Request = Markdown malformato → riprova senza parse_mode
+            if "400" in err_str or "Bad Request" in err_str:
+                try:
+                    clean = txt.replace("*","").replace("`","").replace("_","")
+                    await _tg_app.bot.edit_message_caption(
+                        chat_id=tid, message_id=mid,
+                        caption=clean, reply_markup=markup
+                    )
+                    return
+                except Exception as e2:
+                    log.warning(f"_edit plain fallback: {e2}")
 
     # Foto cancellata → manda nuova e salva id
     try:
@@ -1708,12 +1720,14 @@ async def _toggle_shuffle(q, user: dict):
         if "PREMIUM" in reason:
             await q.answer("🔒 Shuffle richiede Spotify Premium.", show_alert=True)
         else:
-            # NOT_PLAYING_LOCALLY o PLAYER_COMMAND_FAILED
-            await q.answer("⚠️ Avvia la musica su Spotify prima di usare Shuffle.", show_alert=True)
+            await q.answer("⚠️ Shuffle non disponibile. Avvia una playlist su Spotify.", show_alert=True)
     elif status == 404:
-        await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
+        if "NO_ACTIVE_DEVICE" in reason:
+            await q.answer("📱 Apri Spotify, avvia un brano, poi usa Shuffle.", show_alert=True)
+        else:
+            await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore Spotify ({status}:{reason}). Riprova.", show_alert=True)
+        await q.answer(f"⚠️ Errore Spotify ({status}). Riprova.", show_alert=True)
 
 
 async def _toggle_repeat(q, user: dict):
@@ -1755,11 +1769,14 @@ async def _toggle_repeat(q, user: dict):
         if "PREMIUM" in reason:
             await q.answer("🔒 Repeat richiede Spotify Premium.", show_alert=True)
         else:
-            await q.answer("⚠️ Avvia la musica su Spotify prima di usare Repeat.", show_alert=True)
+            await q.answer("⚠️ Repeat non disponibile. Avvia una playlist su Spotify.", show_alert=True)
     elif status == 404:
-        await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
+        if "NO_ACTIVE_DEVICE" in reason:
+            await q.answer("📱 Apri Spotify, avvia un brano, poi usa Repeat.", show_alert=True)
+        else:
+            await q.answer("⚠️ Dispositivo non trovato. Apri Spotify e avvia un brano.", show_alert=True)
     else:
-        await q.answer(f"⚠️ Errore Spotify ({status}:{reason}). Riprova.", show_alert=True)
+        await q.answer(f"⚠️ Errore Spotify ({status}). Riprova.", show_alert=True)
 
 
 async def h_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
