@@ -1686,14 +1686,13 @@ async def _toggle_shuffle(q, user: dict):
     new_state = not current
     state_str = "true" if new_state else "false"
 
-    # Spotify richiede device_id per shuffle — obbligatorio
-    device_id = _get_device_id_optional(user)
-    if not device_id:
-        await q.answer("⚠️ Avvia un brano su Spotify, poi riprova Shuffle.", show_alert=True)
-        return
+    device_id  = _get_device_id_optional(user)
+    params_sh  = {"state": state_str}
+    if device_id:
+        params_sh["device_id"] = device_id
+    log.info(f"[shuffle] state={state_str} device={device_id or 'none (Spotify auto)'}")
 
-    res    = sp_put(user, "/me/player/shuffle",
-                    params={"state": state_str, "device_id": device_id})
+    res    = sp_put(user, "/me/player/shuffle", params=params_sh)
     status = (res or {}).get("_status", 0)
     body   = (res or {}).get("_body", {})
     reason = str(body.get("error", {}).get("reason", "")).upper()
@@ -1736,12 +1735,12 @@ async def _toggle_repeat(q, user: dict):
     labels   = {"off": "🔁 Repeat OFF", "context": "🔁 Repeat Playlist", "track": "🔂 Repeat 1 Brano"}
 
     device_id = _get_device_id_optional(user)
-    if not device_id:
-        await q.answer("⚠️ Avvia un brano su Spotify, poi riprova Repeat.", show_alert=True)
-        return
+    params_rp = {"state": new_mode}
+    if device_id:
+        params_rp["device_id"] = device_id
+    log.info(f"[repeat] mode={new_mode} device={device_id or 'none (Spotify auto)'}")
 
-    res    = sp_put(user, "/me/player/repeat",
-                    params={"state": new_mode, "device_id": device_id})
+    res    = sp_put(user, "/me/player/repeat", params=params_rp)
     status = (res or {}).get("_status", 0)
     body_r = (res or {}).get("_body", {})
     reason = str(body_r.get("error", {}).get("reason", "")).upper()
@@ -2265,6 +2264,12 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
         err_code = (tracks_data or {}).get("_err", "?")
         body_info = str((tracks_data or {}).get("_body", ""))[:120]
         log.error(f"Tracks error: pl_id={pl_id} page={page} err={err_code} body={body_info}")
+        error_kb_403 = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔄 Riconnetti Spotify", callback_data="reconnect"),
+        ],[
+            InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+            InlineKeyboardButton("🏠 Menu",     callback_data="back"),
+        ]])
         error_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Riprova",  callback_data=f"pl:{pl_id}"),
             InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
@@ -2273,20 +2278,25 @@ async def _edit_playlist_tracks(q, user, pl_id: str, page=0):
             InlineKeyboardButton("🏠 Menu",       callback_data="back"),
         ]])
         if str(err_code) == "403":
-            msg = (
+            await _edit(q,
                 f"`{SEP}`\n"
-                "🔒 *Permessi playlist mancanti*\n"
+                "🔒 *Permessi mancanti*\n"
                 f"`{SEP}`\n\n"
-                "Il tuo token Spotify non include\n"
-                "il permesso per leggere i brani.\n\n"
-                "✅ *Soluzione rapida:*\n"
-                "Premi *Riconnetti Spotify* per\n"
-                "aggiornare i permessi.\n\n"
-                "_Operazione richiesta una sola volta._"
+                "Token senza permesso lettura brani.\n\n"
+                "✅ Premi *Riconnetti Spotify*\n"
+                "_Basta premere Accetta su Spotify_",
+                markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Riconnetti Spotify", callback_data="reconnect"),
+                ],[
+                    InlineKeyboardButton("🔙 Playlist", callback_data="back_playlists"),
+                    InlineKeyboardButton("🏠 Menu",     callback_data="back"),
+                ]])
             )
         else:
-            msg = f"⚠️ Errore brani (`{err_code}`).\n`{body_info}`"
-        await _edit(q, msg, markup=error_kb)
+            await _edit(q,
+                f"⚠️ Errore brani (`{err_code}`).\n`{body_info}`",
+                markup=error_kb
+            )
         return
 
     items = tracks_data.get("items", [])
